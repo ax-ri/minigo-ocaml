@@ -1,0 +1,141 @@
+$$$arity
+func f() { }
+func main() { f(1) }
+$
+func f(x int) { }
+func main() { f() }
+$
+func f() int { return 42 }
+func g() {}
+func main() { f(g()) }
+$$$return
+func main() { return 1 }
+$
+func f() int { return }
+func main() { }
+$
+func f() int {}
+func main() { }
+$
+func f(x int) int { if x > 0 { return 1 } }
+func main() { }
+$
+func f(x int) int { for x > 0 { return 1 } }
+func main() { }
+$$$unused
+func main() { x := 1 }
+$
+func main() { var x int }
+$
+func main() { var x = 1 }
+$
+import "fmt"
+func main() { x, y := 1, 2; fmt.Print(x) }
+$$$nil
+func main() { l := nil }
+$
+func main() { var l = nil }
+$
+func main() { x := *nil }
+$
+type T struct { a int }
+func main() { x := nil.a }
+$$$import
+func main() { fmt.Print("oups") }
+$
+func main() { fmt.Print() }
+$
+import "fmt"
+func main() {}
+$$$redeclared
+type T struct {}
+func main() {}
+type T struct {}
+$
+type T struct {}
+type T struct {}
+func main() {}
+$
+func main() {}
+func main() {}
+$
+func foo() {}
+func main() {}
+func foo() {}
+$$$duplicate
+type T struct { x,x int }
+func main() {}
+$
+func foo() int { x,x := 1,2; return x }
+func main() {}
+$
+func foo() int { var x,x int; return x }
+func main() {}
+$
+import "fmt"
+func foo() { var x int; fmt.Print(x); var x int; fmt.Print(x); }
+func main() {}
+$
+import "fmt"
+func foo() { var x int; fmt.Print(x); x := 1; fmt.Print(x) }
+func main() {}
+$
+func foo(x,x int) {}
+func main() {}
+$$$undefined
+func main() { foo() }
+$
+func main() { x = 1 }
+$
+func main() { t := new(T) }
+$
+type T struct {}
+func main() { t := new(T); t.a = 1 }
+$
+type T struct { x S }
+func main() {}
+$
+func main() { x := x + 1 }
+$$$nil
+func f() bool { var b = nil == nil; return b }
+func main() { }
+$
+func f() *int { var p = nil; return p }
+func main() { }
+$$$leftvalue
+func main() { 1 = 2 }
+$
+func main() { var x = &1 }
+$
+func main() { var x = &"toto" }
+$$$recursive
+type S struct { s S }
+func main() {}
+$
+type A struct { b B }
+type B struct { a A }
+func main() {}
+$
+type A struct { b B }
+func main() {}
+type B struct { a A }
+$
+type A struct { t T }
+func main() {}
+type B struct { a A }
+type T struct { b B }
+$$$main
+func foo() int { return 42 }
+$
+func main(x int) { }
+$
+func main() int { return 0 }
+$$$underscore
+func f(_ int) int { return _ }
+func main() {}
+$
+func f() int { a, _ := 1, 2; return _ }
+func main() {}
+$
+func f() int { a, _ := 1, 2; _ = 3; return 42 }
+func main() {}

@@ -1,0 +1,82 @@
+$$$comment
+// c'est un commentaire // et ça aussi
+$
+/* @ *//* oups
+*/
+$$$semicolon
+func main() {
+	;
+}
+$
+func main() {
+	;;;;
+;
+  ;
+}
+$
+func main() {
+	x := 1;
+	x++
+}
+$
+func main() {
+	x := 1;
+	x++
+        x = 2
+}
+$
+func main() {
+	for i := 1
+	i <= 10
+
+	i++ {
+	}
+}
+$
+func main() {
+	x := 1 +
+          2
+        x++
+}
+$
+func main() {
+	x := 1 +   // pas de point-virgule automatique
+          2
+        x++
+}
+$
+func foo(x int, y int)  { z := x +
+y
+z++}
+func main() {
+	foo(1,
+          2)
+}
+$
+func main() { if 1 < 2 {} else {}; }
+$$$for
+func main() {
+	for {}
+}
+$
+func main() {
+	for 1 < 2 {}
+}
+$$$ident
+func main() { _a := 42 }
+$
+func main() { _42 := 42 }
+$
+func main() { true1 := 42 }
+$$$struct
+type T struct {}
+$
+type T struct {a int;}
+$$$func
+func foo() (int) { return 42 }
+$
+func foo() (int,) { return 42 }
+$
+func foo(x int,) (int) { return x }
+$
+func foo(x int,) (int,) { return x }

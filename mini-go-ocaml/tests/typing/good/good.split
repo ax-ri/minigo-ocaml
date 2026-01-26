@@ -1,0 +1,90 @@
+$$$shadowing
+func f(x bool) { { x := 1; x++ } }
+func main() { f(true) }
+$$$priority
+import "fmt"
+type T struct { a int; b bool; p *int }
+func main() {
+	t := new(T)
+	t.p = &t.a
+	fmt.Print(-t.a)
+	fmt.Print(!t.b)
+	fmt.Print(*t.p)
+}
+$$$print
+import "fmt"
+func main() { fmt.Print() }
+$
+import "fmt"
+func main() { fmt.Print(1, nil, true) }
+$$$many
+import "fmt"
+func foo(x int) (int, int) { return x, x+1 }
+func bar(x,y int) { fmt.Print(x+y) }
+func main() { bar(foo(41)) }
+$
+import "fmt"
+func foo(x int) (int, int) { return x, x+1 }
+func main() {
+	x, y := foo(41)
+	fmt.Print(x+y)
+}
+$
+import "fmt"
+func foo(x int) (int, int) { return x, x+1 }
+func main() {
+	var x, y int
+	x, y = foo(41)
+	fmt.Print(x+y)
+}
+$
+import "fmt"
+func f() (int, int) { return 41, 42 }
+func main() { fmt.Print(f()) }
+$
+import "fmt"
+func f() (int,int) { return 41, 42 }
+func g() (int,int) { return f() }
+func main() { fmt.Print(g()) }
+$
+import "fmt"
+func f() (int, int) { return 41, 42 }
+func main() { x,y := f(); fmt.Print(x+y) }
+$
+import "fmt"
+func f() (int, int) { return 41, 42 }
+func main() { var x,y int = f(); fmt.Print(x+y) }
+$$$struct
+type A struct { b *B }
+type B struct { a A }
+func main() {}
+$
+type A struct { b B }
+type B struct { a *A }
+func main() {}
+$
+type L struct { next *L }
+func main() {}
+$$$return
+func foo(x int) int { if x > 0 { return 1 } else { return 2 } }
+func main() {}
+$$$unused
+import "fmt"
+func main() { a, _ := 1, 2; fmt.Print(a) }
+$$$underscore
+import "fmt"
+func main() {
+	x, _ := 3, 1
+	y, _ := 4, 2
+	fmt.Print(x+y, "\n");
+}
+$
+func f(_ int) {}
+func main() {}
+$
+type T struct { _ int }
+func main() {}
+$
+func main() { var _ int }
+$
+func main() { var _,_ int }
