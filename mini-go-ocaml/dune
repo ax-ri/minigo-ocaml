@@ -1,0 +1,12 @@
+(ocamllex
+ (modules lexer))
+(menhir
+ (flags -v --fixed-exception)
+ (modules parser))
+(executable
+ (name minigo)
+ (modules_without_implementation ast tast)
+ (promote (until-clean))
+ (flags (-g))
+ )
+
