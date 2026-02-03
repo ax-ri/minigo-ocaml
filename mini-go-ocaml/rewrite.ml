@@ -80,7 +80,7 @@ let addr e = make (TEunop (Uamp, e)) (Tptr e.expr_typ)
 
 let many_results f =
   match f.fn_typ with
-  | [] | [ _ ] -> false
+  | Tmany [] | Tmany [ _ ] -> false
   | _ -> true
 ;;
 
@@ -180,21 +180,24 @@ let rec expr rw e =
 
 and many rw f el =
   assert (many_results f);
-  (* f(...el...) => var v1,...,vn; f(...el..., &v1,...,&vn) *)
-  let vl = List.map mkvar f.fn_typ in
-  let fargs = List.map (fun v -> addr (ident v)) vl in
-  match el with
-  | [ { expr_desc = TEcall (g, el') } ] when many_results g ->
-    (* f(g(...)) =>
+  match f.fn_typ with
+  | Tmany l ->
+    (* f(...el...) => var v1,...,vn; f(...el..., &v1,...,&vn) *)
+    let vl = List.map mkvar l in
+    let fargs = List.map (fun v -> addr (ident v)) vl in
+    (match el with
+     | [ { expr_desc = TEcall (g, el') } ] when many_results g ->
+       (* f(g(...)) =>
         var v1,...,vn,w1,...,wk; g(...&w1,...,&wk); f(w1,..,wk, &v1,...,&vn) *)
-    let vl', e' = many rw f el' in
-    ( vl
-    , stmt
-        (TEblock [ stmt (TEvars vl'); e'; stmt (TEcall (f, List.map ident vl' @ fargs)) ])
-    )
-  | _ ->
-    let fargs = exprs rw el @ fargs in
-    vl, stmt (TEcall (f, fargs))
+       let vl', e' = many rw f el' in
+       ( vl
+       , stmt
+           (TEblock
+              [ stmt (TEvars vl'); e'; stmt (TEcall (f, List.map ident vl' @ fargs)) ]) )
+     | _ ->
+       let fargs = exprs rw el @ fargs in
+       vl, stmt (TEcall (f, fargs)))
+  | _ -> failwith "unreachable"
 
 and block rw = function
   | [] -> []
@@ -238,11 +241,15 @@ let function_ f e =
   (* RW2 *)
   let rw, pl, tyl =
     match f.fn_typ with
-    | [] -> rw, pl, []
-    | [ ty ] as tyl when not (is_struct ty) -> rw, pl, tyl
-    | tyl ->
+    | Tmany [] -> rw, pl, []
+    | Tmany tyl ->
       let result ty = mkvar (Tptr ty) in
       let vl = List.map result tyl in
+      { rw with retvl = vl }, pl @ vl, []
+    | ty when not (is_struct ty) -> rw, pl, [ ty ]
+    | ty ->
+      let result ty = mkvar (Tptr ty) in
+      let vl = [ result ty ] in
       { rw with retvl = vl }, pl @ vl, []
   in
   let f = { f with fn_params = pl } in
