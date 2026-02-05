@@ -69,35 +69,31 @@ max=0
 
 echo "Part 1"
 
-echo -n "bad ones "
+echo "bad ones "
 for f in syntax/bad/*.go; do
-    echo -n ".";
+    echo "------------------------------------------------------------------------------------------------------------";
     max=`expr $max + 1`;
     compile --parse-only $f;
     case $? in
 	"0")
-	echo
 	echo "FAILURE on "$f" (should fail)";;
 	"1") score=`expr $score + 1`;;
 	*)
-	echo
 	echo "FAILURE on "$f" (for a bad reason)";;
     esac
 done
 echo
 
-echo -n "good ones "
+echo "good ones "
 for f in syntax/good/*.go typing/bad/*.go typing/good/*.go exec/*.go exec-fail/*.go; do
-    echo -n ".";
+    echo "------------------------------------------------------------------------------------------------------------";
     max=`expr $max + 1`;
     compile --parse-only $f;
     case $? in
-	"1")
-	echo
+	"1")	
 	echo "FAILURE on "$f" (should succeed)";;
 	"0") score=`expr $score + 1`;;
 	*)
-	echo
 	echo "FAILURE on "$f" (for a bad reason)";;
     esac
 done
@@ -105,7 +101,7 @@ echo
 
 percent=`expr 100 \* $score / $max`;
 
-echo -n "Part 1: $score/$max : $percent%"; }
+echo "Part 1: $score/$max : $percent%"; }
 
 # part 2 : static typing
 
@@ -117,35 +113,31 @@ echo "Part 2"
 score=0
 max=0
 
-echo -n "bad ones "
+echo "bad ones "
 for f in typing/bad/*.go; do
-    echo -n ".";
+    echo "------------------------------------------------------------------------------------------------------------";
     max=`expr $max + 1`;
     compile --type-only $f;
     case $? in
 	"0")
-	echo
 	echo "FAILURE on "$f" (should fail)";;
 	"1") score=`expr $score + 1`;;
 	*)
-	echo
 	echo "FAILURE on "$f" (for a bad reason)";;
     esac
 done
 echo
 
-echo -n "good ones "
+echo "good ones "
 for f in typing/good/*.go exec/*.go exec-fail/*.go; do
-    echo -n ".";
+    echo "------------------------------------------------------------------------------------------------------------";
     max=`expr $max + 1`;
     compile --type-only $f;
     case $? in
 	"1")
-	echo
 	echo "FAILURE on "$f" (should succeed)";;
 	"0") score=`expr $score + 1`;;
 	*)
-	echo
 	echo "FAILURE on "$f" (for a bad reason)";;
     esac
 done
@@ -174,7 +166,7 @@ echo "------------------------"
 timeout="why3-cpulimit 30 0 -h"
 
 for f in exec/*.go; do
-    echo -n "."
+    echo "------------"
     asm=exec/`basename $f .go`.s
     rm -f $asm
     expected=exec/`basename $f .go`.out
@@ -205,7 +197,7 @@ echo "Execution (must fail)"
 echo "---------------------"
 
 for f in exec-fail/*.go; do
-    echo -n "."
+    echo "------------"
     asm=exec-fail/`basename $f .go`.s
     rm -f $asm
     max=`expr $max + 1`;
