@@ -11,7 +11,7 @@ open Tast
 let binop = function
   | Ast.Badd -> "+"
   | Bsub -> "-"
-  | Bmul -> "+"
+  | Bmul -> "*"
   | Bdiv -> "/"
   | Bmod -> "%"
   | Beq -> "=="

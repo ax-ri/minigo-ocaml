@@ -298,7 +298,7 @@ let setb a = ins "setb %a" a ()
 let setbe a = ins "setbe %a" a ()
 let label (s : label) = S (asprintf "%a:\n" mangle s)
 let globl (s : label) = S (asprintf "\t.globl\t%a\n" mangle s)
-let comment s = S ("#" ^ s ^ "\n")
+let comment s = S ("# " ^ s ^ "\n")
 
 let aligned_call_wrapper ~f ~newf =
   S

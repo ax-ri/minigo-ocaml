@@ -68,11 +68,7 @@ let () =
     report_loc l;
     eprintf "error: %s\n@." msg;
     exit 1
+  | e ->
+    eprintf "Anomaly: %s\n@." (Printexc.to_string e);
+    exit 2
 ;;
-(* | e ->
-    (* "Normal @{<red>This is red @{<green> Here is green@} Red again@} Normal\n"; *)
-    Ocolor_format.eprintf
-      "@{<yellow>Anomaly@}: %s\n@.%s@."
-      (Printexc.to_string e)
-      (Printexc.get_backtrace ());
-    exit 2 *)

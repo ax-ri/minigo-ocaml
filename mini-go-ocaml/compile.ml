@@ -17,20 +17,188 @@ let new_label =
     "L_" ^ string_of_int !r
 ;;
 
+(* Iterate a list with a function to produce a tuple (code, data) and concatenate together the resulting codes and data.
+Optional start and finish element could be added
+*)
+let concat_code_data
+      ?(start_code = nop)
+      ?(start_data = nop)
+      ?(finish_code = nop)
+      ?(finish_data = nop)
+      (f : 'a -> text * data)
+      (ll : 'a list)
+  : text * data
+  =
+  let code, data =
+    List.fold_left
+      (fun (code, data) e ->
+         (* create a string with a block of all the code concatenated and another with all the data concatenated *)
+         let argscode, argsdata = f e in
+         code ++ argscode, data ++ argsdata)
+      (start_code, start_data)
+      ll
+  in
+  code ++ finish_code, data ++ finish_data
+;;
+
+(* Print function : need to call printf for each argument with the good format *)
+let rec compile_print (arg_list : expr list) : text (* code *) * data =
+  let compile_one_print (arg : expr) =
+    (* get the format of the element to print *)
+    let fmt_str =
+      match arg.expr_typ with
+      | Tbool -> "%lld"
+      | Tint -> "%lld"
+      | Tstring -> "%s"
+      | Tptr _ -> "%p"
+      | Tstruct _ -> failwith "fmt.Print cannot print structures"
+      | Tnil -> failwith "fmt.Print cannot print nil"
+      | Tmany _ -> failwith "print tmany wip"
+    and lbl = new_label () in
+    (* compute argument to %rdi *)
+    let ecode, edata = compile_expr arg in
+    ( ecode
+      (* calling convention: second argument goes into %rsi *)
+      ++ movq !%rdi !%rsi
+      (* calling convention: first argument goes into %rdi *)
+      ++ movq (ilab lbl) !%rdi
+      (* call to printf (with alignment) *)
+      ++ call "printf_"
+    , edata ++ label lbl ++ string fmt_str )
+  in
+  concat_code_data
+    ~start_code:(comment "[begin] call to fmt.Print")
+    ~finish_code:(comment "[end] call to fmt.Print")
+    compile_one_print
+    (* todo: je vois pas comment ça marche puisqu'on déroule jamais la liste en pas liste *)
+    arg_list
+
+and compile_binop (binop : binop) (expr1 : expr) (expr2 : expr) : text * data =
+  (* compiled code of first expression stored in %rdi *)
+  let compiled1 = compile_expr expr1 in
+  (* compiled code of second expression stored in %rdi *)
+  let compiled2 = compile_expr expr2 in
+  (* specific code for each operation, at the beginning 
+        - compiled code of expression 1 is in %r8
+        - compiled code of expression 2 is in %rdi
+    *)
+  let op_name, op_code =
+    match binop with
+    | Badd -> "+", addq !%r8 !%rdi
+    | Bsub ->
+      ( "-"
+      , (* need to invert registers to store the result in %rdi *)
+        subq !%rdi !%r8 ++ movq !%r8 !%rdi )
+    | Bmul -> "*", imulq !%r8 !%rdi
+    | Bdiv ->
+      ( "/"
+      , (* integer signed division 
+                - dividend: rdx:rax
+                - divisor: first operand 
+                - quotient: rax <- result
+                - remainder: rdx
+          *)
+        xorq !%rdx !%rdx ++ movq !%r8 !%rax ++ idivq !%rdi ++ movq !%rax !%rdi )
+    | Bmod ->
+      ( "%"
+      , (* integer signed division 
+                - dividend: rdx:rax
+                - divisor: first operand 
+                - quotient: rax
+                - remainder: rdx <- result
+          *)
+        xorq !%rdx !%rdx ++ movq !%r8 !%rax ++ idivq !%rdi ++ movq !%rdx !%rdi )
+    | Beq -> "=", cmpq !%r8 !%rdi ++ sete !%dil
+    | Bne -> "!=", cmpq !%r8 !%rdi ++ setne !%dil
+    | Blt -> "<", cmpq !%r8 !%rdi ++ setl !%dil
+    | Ble -> "<=", cmpq !%r8 !%rdi ++ setle !%dil
+    | Bgt -> ">", cmpq !%r8 !%rdi ++ setg !%dil
+    | Bge -> ">=", cmpq !%r8 !%rdi ++ setge !%dil
+    | Band -> "&&", andq !%rdi !%r8 ++ setnz !%dil
+    | Bor -> "||", orq !%rdi !%r8 ++ setnz !%dil
+  in
+  (* concatenate code of both expressions and of operation *)
+  concat_code_data
+    ~start_code:(comment ("[begin] operation " ^ op_name))
+    ~finish_code:(comment ("[end] operation " ^ op_name))
+    Fun.id
+    [ compiled1
+    ; (* need to push result on the stack to save result of first expression (otherwise overwritten by next expression) *)
+      pushq !%rdi, inline ""
+    ; compiled2
+    ; popq r8, inline ""
+    ; op_code, inline ""
+    ]
+
+(* Generate code for each expressions *)
+and compile_expr (expr : expr) : text (* code *) * data =
+  match expr.expr_desc with
+  | TEskip -> failwith "skip wip"
+  | TEconstant c ->
+    (match c with
+     (* if the expression has non-nil type, its value is stored in %rdi *)
+     | Cbool b -> movq (imm (if b then 1 else 0)) !%rdi, inline ""
+     | Cint i -> movq (imm64 i) !%rdi, inline ""
+     | Cstring s ->
+       let lbl = new_label () in
+       movq (ilab lbl) !%rdi, label lbl ++ string s)
+  | TEbinop (binop, expr1, expr2) -> compile_binop binop expr1 expr2
+  | TEunop (unop, expr) -> failwith "unop wip"
+  | TEnil -> failwith "nil wip"
+  | TEnew typ -> failwith "new wip"
+  | TEcall (f, args) -> failwith "call wip"
+  | TEident var -> failwith "var wip"
+  | TEdot (expr, field) -> failwith "dot wip"
+  | TEassign (arg, values) -> failwith "assign wip"
+  | TEvars vars -> failwith "vars wip"
+  | TEif (b, e1, e2) -> failwith "if wip"
+  | TEreturn el -> failwith "return wip"
+  | TEblock el -> concat_code_data compile_expr el
+  | TEfor (b, e) -> failwith "for wip"
+  | TEprint args -> compile_print args
+  | TEincdec (e, incdec) -> failwith "incdec wip"
+;;
+
+let compile_func tfunc tbody : text (* code *) * data =
+  let body_code, body_data = compile_expr tbody in
+  let code =
+    label tfunc.fn_name
+    ++ pushq !%rbp
+    ++ movq !%rsp !%rbp
+    (* add generated code to the function call *)
+    ++ body_code
+    ++ movq !%rbp !%rsp
+    ++ popq rbp
+    ++ (if tfunc.fn_name = "main"
+        then comment "main must return 0" ++ xorq !%rax !%rax
+        else comment "")
+    ++ ret
+  in
+  ( comment ("[begin] code of function " ^ tfunc.fn_name)
+    ++ code
+    ++ comment ("[end] code of function " ^ tfunc.fn_name)
+  , comment ("[begin] data of function " ^ tfunc.fn_name)
+    ++ body_data
+    ++ comment ("[end] data of function " ^ tfunc.fn_name) )
+;;
+
 let file ?debug:(b = false) (dl : Tast.tfile) : X86_64.program =
   debug := b;
+  let code, data =
+    concat_code_data
+      (function
+        | TDfunction (tfunc, tbody) -> compile_func tfunc tbody
+        | _ -> nop, nop)
+      dl
+  in
   { text =
       globl "main"
-      ++ label "main"
-      ++ nop
-      (* TODO call Go main function here *) ++ xorq (reg rax) (reg rax)
-      ++ ret
-      ++ nop
+      ++ code
       (* TODO assembly code for the Go functions here *)
       ++ inline "\n# TODO some auxiliary assembly functions, if needed\n"
       ++ aligned_call_wrapper ~f:"malloc" ~newf:"malloc_"
       ++ aligned_call_wrapper ~f:"calloc" ~newf:"calloc_"
       ++ aligned_call_wrapper ~f:"printf" ~newf:"printf_"
-  ; data = nop (* TODO static data here, such as string constants *)
+  ; data (* TODO static data here, such as string constants *)
   }
 ;;
