@@ -1,37 +1,9 @@
-(** Static type checking of Mini Go programs (TODO) *)
+(** Static type checking of Mini Go programs *)
 
 open Format
 open Lib
 open Ast
 open Tast
-
-module TypeEnv = struct
-  type t =
-    { functions : (string, function_) Hashtbl.t
-    ; structures : (string, structure) Hashtbl.t
-    ; variables : (string, var) Hashtbl.t
-    ; import_fmt : import_fmt
-    ; mutable fmt_used : bool
-    }
-
-  let create (import_fmt : import_fmt) : t =
-    { functions = Hashtbl.create 8
-    ; structures = Hashtbl.create 8
-    ; variables = Hashtbl.create 8
-    ; import_fmt
-    ; fmt_used = false
-    }
-  ;;
-
-  let clone (tenv : t) : t =
-    { functions = Hashtbl.copy tenv.functions
-    ; structures = Hashtbl.copy tenv.structures
-    ; variables = Hashtbl.copy tenv.variables
-    ; import_fmt = tenv.import_fmt
-    ; fmt_used = tenv.fmt_used
-    }
-  ;;
-end
 
 let debug : bool ref = ref false
 let dummy_loc : location = Lexing.dummy_pos, Lexing.dummy_pos
@@ -63,15 +35,8 @@ let new_var : string -> Ast.location -> typ -> var =
     }
 ;;
 
-let rec is_type_well_formed (tenv : TypeEnv.t) : ptyp -> bool = function
-  | PTident { id; loc } ->
-    (match id with
-     | "bool" | "int" | "string" -> true
-     | id -> Hashtbl.mem tenv.structures id)
-  | PTptr t -> is_type_well_formed tenv t
-;;
-
-let is_list_pairwise_unique (mapper : 'a -> 'b) (l : 'a list) : 'a option =
+(* find the first duplicate element in a list, and returns it *)
+let find_first_duplicate (mapper : 'a -> 'b) (l : 'a list) : 'a option =
   let rec check (acc : 'b list) (l : 'a list) : 'a option =
     match l with
     | [] -> None
@@ -82,37 +47,107 @@ let is_list_pairwise_unique (mapper : 'a -> 'b) (l : 'a list) : 'a option =
   check [] l
 ;;
 
-let rec typ_of_ptyp (tenv : TypeEnv.t) (ptyp : ptyp) : typ =
-  match ptyp with
-  | PTident ident ->
-    (match ident with
-     | { id = "bool"; _ } -> Tbool
-     | { id = "string"; _ } -> Tstring
-     | { id = "int"; _ } -> Tint
-     | { id; loc } ->
-       (match Hashtbl.find_opt tenv.structures id with
-        | Some s -> Tstruct s
-        | None -> errorm ~loc "unbound structure type '%s'" id))
-  | PTptr t -> Tptr (typ_of_ptyp tenv t)
-;;
+(* Represent the typing environment *)
+module TypeEnv = struct
+  type t =
+    { functions : (string, function_) Hashtbl.t
+    ; structures : (string, structure) Hashtbl.t
+    ; variables : (string, var) Hashtbl.t
+    ; import_fmt : import_fmt
+    ; mutable fmt_used : bool
+    }
 
-let typ_of_ptyp_list (tenv : TypeEnv.t) (types : ptyp list) : typ =
-  match types with
-  | [ hd ] -> typ_of_ptyp tenv hd
-  | l -> Tmany (l |> List.map (typ_of_ptyp tenv))
-;;
+  (* create a new typing environment *)
+  let create (import_fmt : import_fmt) : t =
+    { functions = Hashtbl.create 8
+    ; structures = Hashtbl.create 8
+    ; variables = Hashtbl.create 8
+    ; import_fmt
+    ; fmt_used = false
+    }
+  ;;
 
-let typ_of_typ_list (types : typ list) : typ =
-  match types with
-  | [ hd ] -> hd
-  | l -> Tmany l
-;;
+  (* create a new typing environment by copying an already existing one *)
+  let clone (tenv : t) : t =
+    { functions = Hashtbl.copy tenv.functions
+    ; structures = Hashtbl.copy tenv.structures
+    ; variables = Hashtbl.copy tenv.variables
+    ; import_fmt = tenv.import_fmt
+    ; fmt_used = tenv.fmt_used
+    }
+  ;;
+end
 
+(* Helpers functions to deal with types *)
+module TypeHelpers = struct
+  (* check that a ptyp is well formed, in the sense of the typing rules *)
+  let rec is_ptyp_well_formed (tenv : TypeEnv.t) : ptyp -> bool = function
+    | PTident { id; loc } ->
+      (match id with
+       | "bool" | "int" | "string" -> true
+       | id -> Hashtbl.mem tenv.structures id)
+    | PTptr t -> is_ptyp_well_formed tenv t
+  ;;
+
+  (* convert an AST type to a TAST type *)
+  let rec typ_of_ptyp (tenv : TypeEnv.t) (ptyp : ptyp) : typ =
+    match ptyp with
+    | PTident ident ->
+      (match ident with
+       | { id = "bool"; _ } -> Tbool
+       | { id = "string"; _ } -> Tstring
+       | { id = "int"; _ } -> Tint
+       | { id; loc } ->
+         (match Hashtbl.find_opt tenv.structures id with
+          | Some s -> Tstruct s
+          | None -> errorm ~loc "unbound structure type '%s'" id))
+    | PTptr t -> Tptr (typ_of_ptyp tenv t)
+  ;;
+
+  (* convert an AST type list to a TAST type (using TMany) *)
+  let typ_of_ptyp_list (tenv : TypeEnv.t) (types : ptyp list) : typ =
+    match types with
+    | [ hd ] -> typ_of_ptyp tenv hd
+    | l -> Tmany (l |> List.map (typ_of_ptyp tenv))
+  ;;
+
+  (* convert a TAST type list to a TAST type *)
+  let typ_of_typ_list (types : typ list) : typ =
+    match types with
+    | [ hd ] -> hd
+    | l -> Tmany l
+  ;;
+
+  (* convert a TAST type to a TAST type list *)
+  let typ_list_of_typ (typ : typ) : typ list =
+    match typ with
+    | Tmany l -> l
+    | t -> [ t ]
+  ;;
+
+  (* equality operator for TAST types, because the structural operator (=) sometimes fails for recursive types *)
+  let rec are_typ_equals (a : typ) (b : typ) : bool =
+    match a, b with
+    | Tint, Tint -> true
+    | Tbool, Tbool -> true
+    | Tstring, Tstring -> true
+    | Tstruct s1, Tstruct s2 -> s1.s_name = s2.s_name
+    | Tptr t1, Tptr t2 -> are_typ_equals t1 t2
+    | Tptr _, Tnil | Tnil, Tptr _ -> true
+    | Tnil, Tnil -> true
+    | Tmany tl1, Tmany tl2 ->
+      (try List.for_all2 are_typ_equals tl1 tl2 with
+       | Invalid_argument _ -> false)
+    | _ -> false
+  ;;
+end
+
+(* Helpers functions for typing expressions *)
 module Helpers = struct
   (* tell whether all the identifiers are unique in the list *)
   let check_identifiers_uniqueness (ids : ident list) : unit =
     (* check whether each identifier is unique *)
-    match ids |> is_list_pairwise_unique (fun { id; _ } -> id) with
+    match ids |> find_first_duplicate (fun { id; _ } -> id) with
     | Some { id; loc } -> errorm ~loc "duplicate identifier '%s' in identifier list" id
     | None -> ()
   ;;
@@ -121,14 +156,14 @@ module Helpers = struct
   let check_types (tenv : TypeEnv.t) (loc : location) (types : ptyp list) =
     types
     |> List.iter (fun t ->
-      if not (is_type_well_formed tenv t) then errorm ~loc "invalid type")
+      if not (TypeHelpers.is_ptyp_well_formed tenv t) then errorm ~loc "invalid type")
   ;;
 
   (* tell whether all return statements in a block have the same type *)
   let are_returns_homogeneous (expected_ret_type : typ) (block : expr) : bool =
     let rec aux (e : expr) =
       match e.expr_desc, e.expr_typ with
-      | TEreturn _, t -> t = expected_ret_type
+      | TEreturn _, t -> TypeHelpers.are_typ_equals t expected_ret_type
       | TEif (_, e1, e2), _ -> aux e1 && aux e2
       | TEblock l, _ -> l |> List.fold_left (fun acc e -> acc && aux e) true
       | TEfor (_, e), _ -> aux e
@@ -137,13 +172,16 @@ module Helpers = struct
     aux block
   ;;
 
-  (* tell whether all the branches in a block have a return statement *)
-  let rec are_returns_reached (block : expr) : bool =
-    match block.expr_desc with
+  (* check that all the branches in a block have a return statement *)
+  let rec check_all_branches_reach_return (e : expr) : bool =
+    match e.expr_desc with
     | TEreturn _ -> true
-    | TEif (_, e1, e2) -> are_returns_reached e1 && are_returns_reached e2
-    | TEblock l -> l |> List.fold_left (fun acc e -> acc || are_returns_reached e) false
-    | TEfor (_, e) -> are_returns_reached e
+    | TEif (_, b1, b2) ->
+      check_all_branches_reach_return b1 && check_all_branches_reach_return b2
+    | TEblock b ->
+      (match List.rev b with
+       | [] -> false
+       | e :: _ -> check_all_branches_reach_return e)
     | _ -> false
   ;;
 
@@ -165,7 +203,440 @@ module Helpers = struct
   ;;
 end
 
-let rec file ~debug:b ((imp, dl) : Ast.pfile) : Tast.tfile =
+(* expression typing function: convert an AST expression to a TAST expression *)
+(* this function also handles statements as they are not separated from expressions *)
+let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
+  match pexpr.pexpr_desc with
+  (**** expressions ****)
+  | PEskip -> { expr_desc = TEskip; expr_typ = Tnil }
+  | PEconstant c ->
+    let expr_typ =
+      match c with
+      | Cbool _ -> Tbool
+      | Cint _ -> Tint
+      | Cstring _ -> Tstring
+    in
+    { expr_desc = TEconstant c; expr_typ }
+  | PEbinop (binop, pe1, pe2) ->
+    (match binop with
+     | Badd | Bsub | Bmul | Bdiv | Bmod ->
+       let te1 = expr tenv pe1 in
+       let te2 = expr tenv pe2 in
+       if te1.expr_typ <> Tint || te2.expr_typ <> Tint
+       then
+         errorm
+           ~loc:pexpr.pexpr_loc
+           "wrong types for binary operation '%s': expected 'int', found '%a' and '%a'"
+           (Pretty.binop binop)
+           Pretty.typ
+           te1.expr_typ
+           Pretty.typ
+           te2.expr_typ;
+       { expr_desc = TEbinop (binop, te1, te2); expr_typ = Tint }
+     | Beq | Bne ->
+       let te1 = expr tenv pe1 in
+       let te2 = expr tenv pe2 in
+       if not (TypeHelpers.are_typ_equals te1.expr_typ te2.expr_typ)
+       then
+         errorm
+           ~loc:pexpr.pexpr_loc
+           "wrong types for binary operation '%s': both expressions must have the same \
+            type"
+           (Pretty.binop binop);
+       if te1.expr_typ = Tnil && te2.expr_typ = Tnil
+       then
+         errorm
+           ~loc:pexpr.pexpr_loc
+           "wrong types for binary operation '%s': both types are null"
+           (Pretty.binop binop);
+       { expr_desc = TEbinop (binop, te1, te2); expr_typ = Tbool }
+     | Blt | Ble | Bgt | Bge ->
+       let te1 = expr tenv pe1 in
+       let te2 = expr tenv pe2 in
+       if te1.expr_typ <> Tint || te2.expr_typ <> Tint
+       then
+         errorm
+           ~loc:pexpr.pexpr_loc
+           "wrong types for binary operation '%s': expected 'int', found '%a' and '%a'"
+           (Pretty.binop binop)
+           Pretty.typ
+           te1.expr_typ
+           Pretty.typ
+           te2.expr_typ;
+       { expr_desc = TEbinop (binop, te1, te2); expr_typ = Tbool }
+     | Band | Bor ->
+       let te1 = expr tenv pe1 in
+       let te2 = expr tenv pe2 in
+       if te1.expr_typ <> Tbool || te2.expr_typ <> Tbool
+       then
+         errorm
+           ~loc:pexpr.pexpr_loc
+           "wrong types for binary operation '%s': expected 'bool', found '%a' and '%a'"
+           (Pretty.binop binop)
+           Pretty.typ
+           te1.expr_typ
+           Pretty.typ
+           te2.expr_typ;
+       { expr_desc = TEbinop (binop, te1, te2); expr_typ = Tbool })
+  | PEunop (unop, pe) ->
+    (match unop with
+     | Uneg ->
+       let te = expr tenv pe in
+       if te.expr_typ <> Tint
+       then
+         errorm
+           ~loc:pexpr.pexpr_loc
+           "wrong type for unary operation '%s': expected 'int', found '%a'"
+           (Pretty.unop unop)
+           Pretty.typ
+           te.expr_typ;
+       { expr_desc = TEunop (unop, te); expr_typ = Tint }
+     | Unot ->
+       let te = expr tenv pe in
+       if te.expr_typ <> Tbool
+       then
+         errorm
+           ~loc:pexpr.pexpr_loc
+           "wrong type for unary operation '%s': expected 'bool', found '%a'"
+           (Pretty.unop unop)
+           Pretty.typ
+           te.expr_typ;
+       { expr_desc = TEunop (unop, te); expr_typ = Tbool }
+     | Uamp ->
+       let te = expr_left_value tenv pe in
+       { expr_desc = TEunop (unop, te); expr_typ = Tptr te.expr_typ }
+     | Ustar -> expr_left_value tenv pexpr)
+  | PEnil -> { expr_desc = TEnil; expr_typ = Tnil }
+  | PEcall (id, pel) ->
+    (match Hashtbl.find_opt tenv.functions id.id with
+     (* function call fmt.Print *)
+     | None when id.id = "fmt.Print" ->
+       if not tenv.import_fmt
+       then errorm ~loc:id.loc "import of module 'fmt' is required to use 'fmt.Print'";
+       tenv.fmt_used <- true;
+       { expr_desc = TEprint (pel |> List.map (expr tenv)); expr_typ = Tmany [] }
+     (* function call new (for structure) *)
+     | None when id.id = "new" ->
+       (match pel with
+        | [ e ] ->
+          let te = expr tenv e in
+          (match te.expr_typ with
+           | Tstruct s ->
+             let structure = Hashtbl.find_opt tenv.structures s.s_name in
+             (match structure with
+              | None -> errorm ~loc:pexpr.pexpr_loc "structure '%s' not found" s.s_name
+              | Some str ->
+                { expr_desc = TEnew (Tptr te.expr_typ); expr_typ = Tptr te.expr_typ })
+           | _ -> errorm ~loc:pexpr.pexpr_loc "cannot call 'new' on a non-structure type")
+        | _ -> errorm ~loc:pexpr.pexpr_loc "cannot call 'new' to multiple arguments")
+     (* function is used but never declared *)
+     | None -> errorm ~loc:pexpr.pexpr_loc "function '%s' not found" id.id
+     (* function has been declared *)
+     | Some f ->
+       let arguments =
+         match pel with
+         (* actual parameters of function is another function -> need to get all the types of the second function first *)
+         | [ ({ pexpr_desc = PEcall (id, params); pexpr_loc = loc } as pecall) ] ->
+           if f.fn_params = []
+           then errorm ~loc "too much arguments for function '%s'" f.fn_name;
+           let g = expr tenv pecall in
+           let g_returned_types =
+             match g.expr_typ with
+             | Tmany l -> l
+             | t -> [ t ]
+           in
+           List.iter2
+             (fun param arg_typ ->
+                if not (TypeHelpers.are_typ_equals param.v_typ arg_typ)
+                then errorm ~loc "invalid argument type for function '%s'" f.fn_name)
+             f.fn_params
+             g_returned_types;
+           [ g ]
+         | pel ->
+           (try
+              List.iter2
+                (fun pe param ->
+                   let te = expr tenv pe in
+                   let typ = param.v_typ in
+                   if not (TypeHelpers.are_typ_equals te.expr_typ typ)
+                   then
+                     errorm
+                       ~loc:pexpr.pexpr_loc
+                       "invalid argument type for function '%s'"
+                       f.fn_name)
+                pel
+                f.fn_params
+            with
+            | Invalid_argument _ ->
+              errorm
+                ~loc:pexpr.pexpr_loc
+                "invalid argument count for function call '%s'"
+                f.fn_name);
+           pel |> List.map (expr tenv)
+       in
+       { expr_desc = TEcall (f, arguments); expr_typ = f.fn_typ })
+  | PEident id ->
+    (match Hashtbl.find_opt tenv.structures id.id with
+     | None ->
+       if id.id = "_" then errorm ~loc:pexpr.pexpr_loc "cannot use variable '_'";
+       expr_left_value tenv pexpr
+     | Some s -> { expr_desc = TEskip; expr_typ = Tstruct s })
+  | PEdot (pe, id) ->
+    let te = expr tenv pe in
+    (match te.expr_typ with
+     | Tstruct s ->
+       (match Hashtbl.find_opt s.s_fields id.id with
+        | None ->
+          errorm
+            ~loc:pexpr.pexpr_loc
+            "structure '%a' has no field named '%s'"
+            Pretty.expr
+            te
+            id.id
+        | Some field -> { expr_desc = TEdot (te, field); expr_typ = field.f_typ })
+     | Tptr (Tstruct s) ->
+       (match Hashtbl.find_opt s.s_fields id.id with
+        | None ->
+          errorm
+            ~loc:pexpr.pexpr_loc
+            "structure '%a' has no field named '%s'"
+            Pretty.expr
+            te
+            id.id
+        | Some field -> { expr_desc = TEdot (te, field); expr_typ = field.f_typ })
+     | _ as t ->
+       Format.printf "typ: %a\n" Pretty.typ t;
+       errorm ~loc:pexpr.pexpr_loc "accessing a field of a non-struct type")
+  (**** statements ****)
+  | PEassign (left_pexpr, right_pexpr) ->
+    let left_expr = left_pexpr |> List.map (expr_left_value tenv)
+    and right_expr_and_types : (expr * typ) list =
+      match right_pexpr with
+      | [ ({ pexpr_desc = PEcall (id, arg); _ } as pecall) ] ->
+        let f = expr tenv pecall in
+        (match f.expr_typ with
+         | Tmany l -> l |> List.map (fun x -> f, x)
+         | t -> [ f, t ])
+      | _ ->
+        right_pexpr
+        |> List.map (fun pe ->
+          let te = expr tenv pe in
+          te, te.expr_typ)
+    in
+    (try
+       List.iter2
+         (fun { expr_typ = t1; _ } (_, t2) ->
+            if not (TypeHelpers.are_typ_equals t1 t2)
+            then
+              errorm
+                ~loc:pexpr.pexpr_loc
+                "cannot assign value of type '%a' to variable of type '%a'"
+                Pretty.typ
+                t2
+                Pretty.typ
+                t1)
+         left_expr
+         right_expr_and_types
+     with
+     | Invalid_argument _ ->
+       errorm ~loc:pexpr.pexpr_loc "to few or to many values to assign to variables");
+    { expr_desc = TEassign (left_expr, right_expr_and_types |> List.map fst)
+    ; expr_typ = TypeHelpers.typ_of_typ_list (right_expr_and_types |> List.map snd)
+    }
+  | PEvars (ident_list, ptyp_opt, pexpr_list) ->
+    let var_types : typ list =
+      find_var_types tenv pexpr.pexpr_loc ptyp_opt ident_list pexpr_list
+    in
+    (* for each declared variable, create a variable and add it to the environment *)
+    let var_list =
+      try
+        List.map2
+          (fun id typ ->
+             let v = new_var id.id id.loc typ in
+             Hashtbl.add tenv.variables id.id v;
+             v)
+          ident_list
+          var_types
+      with
+      | Invalid_argument _ ->
+        errorm
+          ~loc:pexpr.pexpr_loc
+          "cannot assign '%d' values to '%d' variables (in single-value mode)"
+          (List.length var_types)
+          (List.length ident_list)
+    in
+    { expr_desc = TEvars var_list; expr_typ = Tnil }
+  | PEif (pe, b1, b2) ->
+    let te = expr tenv pe in
+    (match te.expr_typ with
+     | Tbool ->
+       let tb1 = expr tenv b1 in
+       let tb2 = expr tenv b2 in
+       { expr_desc = TEif (te, tb1, tb2); expr_typ = Tnil }
+     | t -> errorm ~loc:pexpr.pexpr_loc "conditional expression must be of boolean type")
+  | PEreturn pel ->
+    let tel = pel |> List.map (fun pe -> expr tenv pe) in
+    { expr_desc = TEreturn tel
+    ; expr_typ = TypeHelpers.typ_of_typ_list (tel |> List.map (fun e -> e.expr_typ))
+    }
+  | PEblock pel ->
+    let rec aux
+              (tenv : TypeEnv.t)
+              (block_statements : Ast.pexpr list)
+              (block_var_names : string list)
+              (acc : expr list)
+      : expr list
+      =
+      match block_statements with
+      (* no more statements to process *)
+      | [] ->
+        (* for each variable that was introduced in this block, check that it is used and remove it from the typing environment *)
+        block_var_names
+        |> List.iter (fun id ->
+          (*  check that any local variable introduced in block, other than _, is further used *)
+          let var = Hashtbl.find tenv.variables id in
+          if var.v_name <> "_" && not var.v_used
+          then errorm ~loc:var.v_loc "unused variable '%s'" var.v_name;
+          (* remove the variable from the environment *)
+          Hashtbl.remove tenv.variables id);
+        (* return the accumulator with the list of typed expressions in the block *)
+        acc
+      (* process the current statement *)
+      | s :: q ->
+        (* if the current statement contains variables declarations, update the list of block variables *)
+        let block_var_names =
+          match s.pexpr_desc with
+          | PEvars (ident_decls, _, _) ->
+            let new_var_names =
+              ident_decls
+              |> List.map (fun { id; loc } ->
+                if id <> "_" && List.mem id block_var_names
+                then errorm ~loc "cannot redeclare a variable named '%s' in same block" id
+                else id)
+            in
+            new_var_names @ block_var_names
+          | _ -> block_var_names
+        in
+        let te = expr tenv s in
+        aux tenv q block_var_names (te :: acc)
+    in
+    { expr_desc = TEblock (List.rev (aux tenv pel [] [])); expr_typ = Tnil }
+  | PEfor (pe, b) ->
+    let te = expr tenv pe in
+    (match te.expr_typ with
+     | Tbool ->
+       let tb = expr tenv b in
+       { expr_desc = TEfor (te, tb); expr_typ = Tnil }
+     | _ -> errorm ~loc:pexpr.pexpr_loc "conditional expression must be of boolean type")
+  | PEincdec (pe, incdec) ->
+    let te = expr_left_value tenv pe in
+    (match te.expr_typ with
+     | Tint -> { expr_desc = TEincdec (te, incdec); expr_typ = Tint }
+     | t ->
+       errorm
+         ~loc:pexpr.pexpr_loc
+         "wrong type for increase/decrease operation: expected 'int', found '%a'"
+         Pretty.typ
+         t)
+
+and
+    (* same as the expression function, but also check that the expression is a left value *)
+      expr_left_value
+      (tenv : TypeEnv.t)
+      (pe : Ast.pexpr)
+  : Tast.expr
+  =
+  match pe.pexpr_desc with
+  | PEunop (Ustar, x) ->
+    let te = expr tenv x in
+    (match te.expr_typ with
+     | Tptr typ -> { expr_desc = TEunop (Ustar, te); expr_typ = typ }
+     | _ ->
+       errorm
+         ~loc:pe.pexpr_loc
+         "wrong type for unary operation '%s': expected 'ptr_', found '%a'"
+         (Pretty.unop Ustar)
+         Pretty.typ
+         te.expr_typ)
+  | PEident id ->
+    (match Hashtbl.find_opt tenv.variables id.id with
+     | None -> errorm ~loc:pe.pexpr_loc "unbound variable '%s'" id.id
+     | Some v ->
+       v.v_used <- true;
+       { expr_desc = TEident v; expr_typ = v.v_typ })
+  | PEdot (e, f) ->
+    let _ = expr_left_value tenv e in
+    expr tenv pe
+  | _ -> errorm ~loc:pe.pexpr_loc "cannot use this value as a left value"
+
+and
+    (* auxiliary function to deduce the types of a list of variables (used by PEVars) *)
+      find_var_types
+      (tenv : TypeEnv.t)
+      (loc : location)
+      (ptyp_opt : ptyp option)
+      (ident_list : ident list)
+      (pexpr_list : pexpr list)
+  : typ list
+  =
+  match ptyp_opt with
+  (* no type provided for declaration => need to deduce the type from initialization values *)
+  | None ->
+    (match pexpr_list with
+     (* special case for initialization with a function call *)
+     (* types list is the return type of the function *)
+     | [ ({ pexpr_desc = PEcall (id, arg); pexpr_loc = _ } as pe) ] ->
+       let f = expr tenv pe in
+       f.expr_typ |> TypeHelpers.typ_list_of_typ
+     (* otherwise, we need to type each expression to get their types *)
+     | _ ->
+       pexpr_list
+       |> List.map (fun pe ->
+         let te = expr tenv pe in
+         if te.expr_typ = Tnil
+         then errorm ~loc "use of untyped nil in variable declaration";
+         te.expr_typ))
+  (* a type is provided for the declaration; in that case, all the variables have this type. *)
+  | Some ptyp ->
+    if not (TypeHelpers.is_ptyp_well_formed tenv ptyp)
+    then errorm ~loc "unbound type for this variable(s)";
+    (* extract the specified type *)
+    let tau = TypeHelpers.typ_of_ptyp tenv ptyp in
+    (* build a verifying function from this reference type *)
+    let value_type_checker =
+      List.iter (fun typ ->
+        if not (TypeHelpers.are_typ_equals typ tau)
+        then
+          errorm
+            ~loc
+            "cannot declare a variable of type '%a' with a value of type '%a'"
+            Pretty.typ
+            tau
+            Pretty.typ
+            typ)
+    in
+    (* apply this verifying function to the initialization expressions *)
+    (match pexpr_list with
+     (* no initialization values specified => nothing to do (will set reference type for each variable) *)
+     | [] -> ()
+     (* variables initialized with a function call *)
+     | [ ({ pexpr_desc = PEcall (id, arg); pexpr_loc = _ } as pe) ] ->
+       (* check that function f exists and only returns values of reference type *)
+       let f = expr tenv pe in
+       f.expr_typ |> TypeHelpers.typ_list_of_typ |> value_type_checker
+     (* variables initialized with a list of expressions *)
+     | _ ->
+       pexpr_list
+       |> List.map (fun pe ->
+         let te = expr tenv pe in
+         te.expr_typ)
+       |> value_type_checker);
+    (* the type of each variable is the reference type *)
+    List.init (List.length ident_list) (fun _ -> tau)
+;;
+
+(* top-level typing rule : convert an AST file to a TAST file *)
+let file ~debug:b ((imp, dl) : Ast.pfile) : Tast.tfile =
   debug := b;
   let tenv = TypeEnv.create imp in
   let function_bodies : (string, expr) Hashtbl.t = Hashtbl.create 8 in
@@ -207,8 +678,8 @@ let rec file ~debug:b ((imp, dl) : Ast.pfile) : Tast.tfile =
         ; fn_params =
             pf_params
             |> List.map (fun ({ id; loc }, ptyp) ->
-              new_var id loc (typ_of_ptyp tenv ptyp))
-        ; fn_typ = typ_of_ptyp_list tenv pf_typ
+              new_var id loc (TypeHelpers.typ_of_ptyp tenv ptyp))
+        ; fn_typ = TypeHelpers.typ_of_ptyp_list tenv pf_typ
         }
       in
       (* add it to the environment *)
@@ -226,7 +697,9 @@ let rec file ~debug:b ((imp, dl) : Ast.pfile) : Tast.tfile =
       ps_fields
       |> List.iter (fun ({ id; _ }, ptyp) ->
         (* construct a field *)
-        let field : field = { f_name = id; f_typ = typ_of_ptyp tenv ptyp; f_ofs = 0 } in
+        let field : field =
+          { f_name = id; f_typ = TypeHelpers.typ_of_ptyp tenv ptyp; f_ofs = 0 }
+        in
         (* add it to the structure in the environment *)
         Hashtbl.add s.s_fields id field;
         s.s_list <- field :: s.s_list));
@@ -255,15 +728,12 @@ let rec file ~debug:b ((imp, dl) : Ast.pfile) : Tast.tfile =
           "in function '%s': different types are returned"
           pf_name.id;
       (*  - if m > 0, that any control-flow branch in b reaches a return statement; *)
-      (match f.fn_typ with
-       | Tmany [] -> () (* ignores empty return type *)
-       | _ ->
-         if not (Helpers.are_returns_reached body)
-         then
-           errorm
-             ~loc:pf_name.loc
-             "in function '%s': not all branches return a value"
-             f.fn_name);
+      if f.fn_typ <> Tmany [] && not (Helpers.check_all_branches_reach_return body)
+      then
+        errorm
+          ~loc:pf_name.loc
+          "in function '%s': not all branches return a value"
+          f.fn_name;
       (* store the function body for later use *)
       Hashtbl.add function_bodies pf_name.id body
     (* 3.b
@@ -292,383 +762,4 @@ let rec file ~debug:b ((imp, dl) : Ast.pfile) : Tast.tfile =
      |> Hashtbl.to_seq_values
      |> Seq.map (fun f -> TDfunction (f, Hashtbl.find function_bodies f.fn_name)))
   |> List.of_seq
-
-and expr (tenv : TypeEnv.t) ({ pexpr_desc; pexpr_loc } : Ast.pexpr) : Tast.expr =
-  match pexpr_desc with
-  (**** expressions ****)
-  | PEskip -> { expr_desc = TEskip; expr_typ = Tnil }
-  | PEconstant c ->
-    let expr_typ =
-      match c with
-      | Cbool _ -> Tbool
-      | Cint _ -> Tint
-      | Cstring _ -> Tstring
-    in
-    { expr_desc = TEconstant c; expr_typ }
-  | PEbinop (binop, pe1, pe2) ->
-    (match binop with
-     | Badd | Bsub | Bmul | Bdiv | Bmod ->
-       let te1 = expr tenv pe1 in
-       let te2 = expr tenv pe2 in
-       if te1.expr_typ <> Tint || te2.expr_typ <> Tint
-       then
-         errorm
-           ~loc:pexpr_loc
-           "wrong types for binary operation '%s': expected 'int', found '%a' and '%a'"
-           (Pretty.binop binop)
-           Pretty.typ
-           te1.expr_typ
-           Pretty.typ
-           te2.expr_typ;
-       { expr_desc = TEbinop (binop, te1, te2); expr_typ = Tint }
-     | Beq | Bne ->
-       let te1 = expr tenv pe1 in
-       let te2 = expr tenv pe2 in
-       if te1.expr_typ <> te2.expr_typ
-       then
-         errorm
-           ~loc:pexpr_loc
-           "wrong types for binary operation '%s': both expressions must have the same \
-            type"
-           (Pretty.binop binop);
-       if te1.expr_typ = Tnil && te2.expr_typ = Tnil
-       then
-         errorm
-           ~loc:pexpr_loc
-           "wrong types for binary operation '%s': both types are null"
-           (Pretty.binop binop);
-       { expr_desc = TEbinop (binop, te1, te2); expr_typ = Tbool }
-     | Blt | Ble | Bgt | Bge ->
-       let te1 = expr tenv pe1 in
-       let te2 = expr tenv pe2 in
-       if te1.expr_typ <> Tint || te2.expr_typ <> Tint
-       then
-         errorm
-           ~loc:pexpr_loc
-           "wrong types for binary operation '%s': expected 'int', found '%a' and '%a'"
-           (Pretty.binop binop)
-           Pretty.typ
-           te1.expr_typ
-           Pretty.typ
-           te2.expr_typ;
-       { expr_desc = TEbinop (binop, te1, te2); expr_typ = Tbool }
-     | Band | Bor ->
-       let te1 = expr tenv pe1 in
-       let te2 = expr tenv pe2 in
-       if te1.expr_typ <> Tbool || te2.expr_typ <> Tbool
-       then
-         errorm
-           ~loc:pexpr_loc
-           "wrong types for binary operation '%s': expected 'bool', found '%a' and '%a'"
-           (Pretty.binop binop)
-           Pretty.typ
-           te1.expr_typ
-           Pretty.typ
-           te2.expr_typ;
-       { expr_desc = TEbinop (binop, te1, te2); expr_typ = Tbool })
-  | PEunop (unop, pe) ->
-    (match unop with
-     | Uneg ->
-       let te = expr tenv pe in
-       if te.expr_typ <> Tint
-       then
-         errorm
-           ~loc:pexpr_loc
-           "wrong type for unary operation '%s': expected 'int', found '%a'"
-           (Pretty.unop unop)
-           Pretty.typ
-           te.expr_typ;
-       { expr_desc = TEunop (unop, te); expr_typ = Tint }
-     | Unot ->
-       let te = expr tenv pe in
-       if te.expr_typ <> Tbool
-       then
-         errorm
-           ~loc:pexpr_loc
-           "wrong type for unary operation '%s': expected 'bool', found '%a'"
-           (Pretty.unop unop)
-           Pretty.typ
-           te.expr_typ;
-       { expr_desc = TEunop (unop, te); expr_typ = Tbool }
-     | Uamp ->
-       let te = expr_left_value tenv pe in
-       { expr_desc = TEunop (unop, te); expr_typ = Tptr te.expr_typ }
-     | Ustar -> expr_left_value tenv { pexpr_desc; pexpr_loc })
-  | PEnil -> { expr_desc = TEnil; expr_typ = Tnil }
-  | PEcall (id, pel) ->
-    (match Hashtbl.find_opt tenv.functions id.id with
-     | None when id.id = "fmt.Print" ->
-       if not tenv.import_fmt
-       then errorm ~loc:id.loc "import of module 'fmt' is required to use 'fmt.Print'";
-       tenv.fmt_used <- true;
-       { expr_desc = TEprint (pel |> List.map (expr tenv)); expr_typ = Tmany [] }
-     | None -> errorm ~loc:pexpr_loc "function '%s' not found" id.id
-     | Some f ->
-       (try
-          List.iter2
-            (fun pe param ->
-               let te = expr tenv pe in
-               let typ = param.v_typ in
-               if te.expr_typ <> typ
-               then
-                 errorm ~loc:pexpr_loc "in function '%s': invalid argument type" f.fn_name)
-            pel
-            f.fn_params
-        with
-        | Invalid_argument _ ->
-          errorm ~loc:pexpr_loc "invalid argument count for function call '%s'" f.fn_name);
-       (* TODO cas spécial pour f(g()), par exemple pour gérer
-            def f(x, y): print(x, y)
-            def g(): 1, 2
-
-             f(g()) === f((1, 2), _)
-            on veut === f(1, 2)
-        *)
-       { expr_desc = TEcall (f, pel |> List.map (expr tenv)); expr_typ = f.fn_typ })
-  | PEident id -> failwith "peident wip"
-  | PEdot (pe, id) ->
-    let te = expr tenv pe in
-    (match te.expr_typ with
-     | Tstruct s ->
-       (match Hashtbl.find_opt s.s_fields id.id with
-        | None ->
-          errorm
-            ~loc:pexpr_loc
-            "structure '%a' has no field named '%s'"
-            Pretty.expr
-            te
-            id.id
-        | Some field -> { expr_desc = TEdot (te, field); expr_typ = field.f_typ })
-     | Tptr (Tstruct s) ->
-       (* TODO : comment on check si e!= nil ?? *)
-       (match Hashtbl.find_opt s.s_fields id.id with
-        | None ->
-          errorm
-            ~loc:pexpr_loc
-            "structure '%a' has no field named '%s'"
-            Pretty.expr
-            te
-            id.id
-        | Some field -> { expr_desc = TEdot (te, field); expr_typ = field.f_typ })
-     | _ -> errorm ~loc:pexpr_loc "accessing a field of a non-struct type")
-  (**** statements ****)
-  | PEassign (left_pexpr, right_pexpr) ->
-    let left_expr = left_pexpr |> List.map (expr_left_value tenv)
-    and right_expr_and_types : (expr * typ) list =
-      match right_pexpr with
-      | [ ({ pexpr_desc = PEcall (id, arg); _ } as pecall) ] ->
-        let f = expr tenv pecall in
-        (match f.expr_typ with
-         | Tmany l -> l |> List.map (fun x -> f, x)
-         | t -> [ f, t ])
-      | _ ->
-        right_pexpr
-        |> List.map (fun pe ->
-          let te = expr tenv pe in
-          te, te.expr_typ)
-    in
-    (try
-       List.iter2
-         (fun { expr_typ = t1; _ } (_, t2) ->
-            if t1 <> t2
-            then
-              errorm
-                ~loc:pexpr_loc
-                "cannot assign value of type '%a' to variable of type '%a'"
-                Pretty.typ
-                t2
-                Pretty.typ
-                t1)
-         left_expr
-         right_expr_and_types
-     with
-     | Invalid_argument _ ->
-       errorm ~loc:pexpr_loc "to few or to many values to assign to variables");
-    { expr_desc = TEassign (left_expr, right_expr_and_types |> List.map fst)
-    ; expr_typ = typ_of_typ_list (right_expr_and_types |> List.map snd)
-    }
-  | PEvars (ident_list, ptyp, pexpr_list) ->
-    let var_types : typ list =
-      match ptyp with
-      | None -> failwith "pevars wip"
-      | Some ptyp ->
-        if not (is_type_well_formed tenv ptyp)
-        then errorm ~loc:pexpr_loc "unbound type for this variable(s)";
-        (* extract the specified type *)
-        let tau = typ_of_ptyp tenv ptyp in
-        (match pexpr_list with
-         (* no initialization values specified => set reference type for each variable *)
-         | [] -> List.init (List.length ident_list) (fun _ -> tau)
-         (* variables initialized with a function call *)
-         | [ ({ pexpr_desc = PEcall (id, arg); pexpr_loc = _ } as pe) ] ->
-           (* check that function f exists and only returns values of reference type *)
-           let f = expr tenv pe in
-           let returned_types =
-             match f.expr_typ with
-             | Tmany l -> l
-             | t -> [ t ]
-           in
-           returned_types
-           |> List.iter (fun typ ->
-             if typ <> tau
-             then
-               errorm
-                 ~loc:pexpr_loc
-                 "cannot declare a variable of type '%a' with a value of type '%a'"
-                 Pretty.typ
-                 tau
-                 Pretty.typ
-                 typ);
-           returned_types
-         (* variables initialized with a list of expressions *)
-         | pel ->
-           let returned_types =
-             pel
-             |> List.map (fun pe ->
-               let te = expr tenv pe in
-               te.expr_typ)
-           in
-           returned_types
-           |> List.iter (fun typ ->
-             if typ <> tau
-             then
-               errorm
-                 ~loc:pexpr_loc
-                 "cannot declare a variable of type '%a' with a value of type '%a'"
-                 Pretty.typ
-                 tau
-                 Pretty.typ
-                 typ);
-           returned_types)
-    in
-    (* for each declared variable, create a variable and add it to the environment *)
-    let var_list =
-      try
-        List.map2
-          (fun id typ ->
-             let v = new_var id.id id.loc typ in
-             Hashtbl.add tenv.variables id.id v;
-             v)
-          ident_list
-          var_types
-      with
-      | Invalid_argument _ ->
-        errorm
-          ~loc:pexpr_loc
-          "cannot assign '%d' values to '%d' variables (in single-value mode)"
-          (List.length var_types)
-          (List.length ident_list)
-    in
-    { expr_desc = TEvars var_list; expr_typ = Tnil }
-  | PEif (pe, b1, b2) ->
-    let te = expr tenv pe in
-    (match te.expr_typ with
-     | Tbool ->
-       let tb1 = expr tenv b1 in
-       let tb2 = expr tenv b2 in
-       { expr_desc = TEif (te, tb1, tb2); expr_typ = Tnil }
-     | t -> errorm ~loc:pexpr_loc "conditional expression must be of boolean type")
-  | PEreturn pel ->
-    let tel = pel |> List.map (fun pe -> expr tenv pe) in
-    { expr_desc = TEreturn tel
-    ; expr_typ = typ_of_typ_list (tel |> List.map (fun e -> e.expr_typ))
-    }
-  | PEblock pel ->
-    let rec aux
-              (tenv : TypeEnv.t)
-              (block_statements : Ast.pexpr list)
-              (block_var_names : string list)
-              (acc : expr list)
-      : expr list
-      =
-      match block_statements with
-      (* no more statements to process *)
-      | [] ->
-        (* for each variable that was introduced in this block, check that it is used and remove it from the typing environment *)
-        block_var_names
-        |> List.iter (fun id ->
-          (*  check that any local variable introduced in block, other than _, is further used *)
-          let var = Hashtbl.find tenv.variables id in
-          if var.v_name <> "_" && not var.v_used
-          then errorm ~loc:var.v_loc "unused variable '%s'" var.v_name;
-          (* remove the variable from the environment *)
-          Hashtbl.remove tenv.variables id);
-        (* return the accumulator with the list of typed expressions in the block *)
-        acc
-      (* process the current statement *)
-      | s :: q ->
-        (* if the current statement contains variables declarations, update the list of block variables *)
-        let block_var_names =
-          match s.pexpr_desc with
-          | PEvars (ident_decls, _, _) ->
-            let new_var_names =
-              ident_decls
-              |> List.map (fun { id; loc } ->
-                if List.mem id block_var_names
-                then errorm ~loc "cannot redeclare a variable named '%s' in same block" id
-                else id)
-            in
-            new_var_names @ block_var_names
-          | _ -> block_var_names
-        in
-        let te = expr tenv s in
-        aux tenv q block_var_names (te :: acc)
-    in
-    { expr_desc = TEblock (List.rev (aux tenv pel [] [])); expr_typ = Tnil }
-  | PEfor (pe, b) ->
-    let te = expr tenv pe in
-    (match te.expr_typ with
-     | Tbool ->
-       let tb = expr tenv b in
-       { expr_desc = TEfor (te, tb); expr_typ = Tnil }
-     | _ -> errorm ~loc:pexpr_loc "conditional expression must be of boolean type")
-  | PEincdec (pe, incdec) ->
-    let te = expr_left_value tenv pe in
-    (match te.expr_typ with
-     | Tint -> { expr_desc = TEincdec (te, incdec); expr_typ = Tint }
-     | t ->
-       errorm
-         ~loc:pexpr_loc
-         "wrong type for increase/decrease operation: expected 'int', found '%a'"
-         Pretty.typ
-         t)
-
-and expr_left_value (tenv : TypeEnv.t) (pe : Ast.pexpr) : Tast.expr =
-  match pe.pexpr_desc with
-  | PEunop (Ustar, x) ->
-    let te = expr tenv x in
-    (match te.expr_typ with
-     | Tptr typ -> { expr_desc = TEunop (Ustar, te); expr_typ = typ }
-     | _ ->
-       errorm
-         ~loc:pe.pexpr_loc
-         "wrong type for unary operation '%s': expected 'ptr_', found '%a'"
-         (Pretty.unop Ustar)
-         Pretty.typ
-         te.expr_typ)
-  | PEident id ->
-    (match Hashtbl.find_opt tenv.variables id.id with
-     | None -> errorm ~loc:pe.pexpr_loc "unbound variable '%s'" id.id
-     | Some v -> { expr_desc = TEident v; expr_typ = v.v_typ })
-  | PEdot (e, f) ->
-    let _ = expr_left_value tenv e in
-    expr tenv pe
-  | _ -> errorm ~loc:pe.pexpr_loc "cannot use this value as a left value"
 ;;
-
-(* 
-The declarations in a file can appear in any order. In particular, functions and structures are mutually recursive. It is suggested to proceed in three steps:
-
-- [x] We add all the structures (but not their fields) to the environment, checking the uniqueness of the structure names.
-- [x]
-  - [x] We add all the functions to the environment, checking the uniqueness of the function names. For a function declaration of the form
-  func f (x1 : τ1, . . . , xn : τn) (τ′1, . . . , τ′m) {b} we check that the xi are pairwise distinct and that all types τi and τ′j are well-formed.
-  - [x] We check and add all the structure fields to the environment. For a structure declaration of the form type S struct { x1 : τ1, . . . , xn : τn } we check that the xi are pairwise distinct and that all types τi are well-formed.
-- [ ]
-  - [x] For each function declaration func f (x1 : τ1, . . . , xn : τn) (τ′1, . . . , τ′m) {b} we construct a new environment Γ by adding all the variables xi : τi to the environment containing the structures and functions, and we type the block b in Γ, i.e., we check Γ ⊢ b. Additionally, we check that 
-      - every return statement in b returns a list of m values of the expected types τ′1, . . . , τ′m
-      - if m > 0, that any control-flow branch in b reaches a return statement;
-      - that any local variable introduced in b, other than _, is further used.
-  - [ ] We check that there is no “recursive” structure, that is, no structure S with a field (which contains a field, which contains a field, etc.) of type S, without passing through a pointer.
-- [ ] Finally, we check that there exists a function main without parameters and without return type and that the file contains import "fmt" f and only if there is at least one `fmt.Print` instruction somewhere in the file
-*)

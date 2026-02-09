@@ -7,6 +7,7 @@
 
 (executable
  (name minigo)
+ (libraries ocolor)
  (modules_without_implementation ast tast)
  (promote (until-clean))
  (flags (-g)))

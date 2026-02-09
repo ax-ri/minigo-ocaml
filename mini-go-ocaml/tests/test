@@ -76,10 +76,10 @@ for f in syntax/bad/*.go; do
     compile --parse-only $f;
     case $? in
 	"0")
-	echo "FAILURE on "$f" (should fail)";;
+	echo -e "\e[0;31mFAILURE\e[0m on "$f" (should fail)";;
 	"1") score=`expr $score + 1`;;
 	*)
-	echo "FAILURE on "$f" (for a bad reason)";;
+	echo -e "\e[0;31mFAILURE\e[0m on "$f" (for a bad reason)";;
     esac
 done
 echo
@@ -91,10 +91,10 @@ for f in syntax/good/*.go typing/bad/*.go typing/good/*.go exec/*.go exec-fail/*
     compile --parse-only $f;
     case $? in
 	"1")	
-	echo "FAILURE on "$f" (should succeed)";;
+	echo -e "\e[0;31mFAILURE\e[0m on "$f" (should succeed)";;
 	"0") score=`expr $score + 1`;;
 	*)
-	echo "FAILURE on "$f" (for a bad reason)";;
+	echo -e "\e[0;31mFAILURE\e[0m on "$f" (for a bad reason)";;
     esac
 done
 echo
@@ -120,10 +120,10 @@ for f in typing/bad/*.go; do
     compile --type-only $f;
     case $? in
 	"0")
-	echo "FAILURE on "$f" (should fail)";;
+	echo -e "\e[0;31mFAILURE\e[0m on "$f" (should fail)";;
 	"1") score=`expr $score + 1`;;
 	*)
-	echo "FAILURE on "$f" (for a bad reason)";;
+	echo -e "\e[0;31mFAILURE\e[0m on "$f" (for a bad reason)";;
     esac
 done
 echo
@@ -135,10 +135,10 @@ for f in typing/good/*.go exec/*.go exec-fail/*.go; do
     compile --type-only $f;
     case $? in
 	"1")
-	echo "FAILURE on "$f" (should succeed)";;
+	echo -e "\e[0;31mFAILURE\e[0m on "$f" (should succeed)";;
 	"0") score=`expr $score + 1`;;
 	*)
-	echo "FAILURE on "$f" (for a bad reason)";;
+	echo -e "\e[0;31mFAILURE\e[0m on "$f" (for a bad reason)";;
     esac
 done
 echo
