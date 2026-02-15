@@ -41,36 +41,55 @@ let concat_code_data
   code ++ finish_code, data ++ finish_data
 ;;
 
+let lbl_true = new_label ()
+and lbl_false = new_label ()
+
 (* Print function : need to call printf for each argument with the good format *)
 let rec compile_print (arg_list : expr list) : text (* code *) * data =
-  let compile_one_print (arg : expr) =
-    (* get the format of the element to print *)
-    let fmt_str =
-      match arg.expr_typ with
-      | Tbool -> "%lld"
-      | Tint -> "%lld"
-      | Tstring -> "%s"
-      | Tptr _ -> "%p"
-      | Tstruct _ -> failwith "fmt.Print cannot print structures"
-      | Tnil -> failwith "fmt.Print cannot print nil"
-      | Tmany _ -> failwith "print tmany wip"
-    and lbl = new_label () in
-    (* compute argument to %rdi *)
+  let compile_one_print (arg : expr) : text * data =
+    (* compile argument. after ecode, the argument value will be in %rdi *)
     let ecode, edata = compile_expr arg in
-    ( ecode
-      (* calling convention: second argument goes into %rsi *)
-      ++ movq !%rdi !%rsi
-      (* calling convention: first argument goes into %rdi *)
-      ++ movq (ilab lbl) !%rdi
-      (* call to printf (with alignment) *)
-      ++ call "printf_"
-    , edata ++ label lbl ++ string fmt_str )
+    if arg.expr_typ = Tbool
+    then
+      ( ecode
+        (* put the label for string "true" in %rax and the label for string "false" in %rbx *)
+        ++ movq (ilab lbl_true) !%rax
+        ++ movq (ilab lbl_false) !%rbx
+        (* compare the boolean value with 1 (true) *)
+        ++ cmpq (imm 1) !%rdi
+        (* based on the comparison, move either %rax or %rbx in %rdi *)
+        (* this way, the first argument of printf (%rdi) is either the label for string "true" or the label for string "false" *)
+        (* according to the value of the boolean *)
+        ++ cmove !%rax !%rdi
+        ++ cmovne !%rbx !%rdi
+        (* call to printf (with alignment) *)
+        ++ call "printf_"
+      , edata )
+    else (
+      (* get the format of the element to print *)
+      let fmt_str =
+        match arg.expr_typ with
+        | Tbool -> failwith "unreachable"
+        | Tint -> "%lld"
+        | Tstring -> "%s"
+        | Tptr _ -> "%p"
+        | Tstruct _ -> failwith "fmt.Print cannot print structures"
+        | Tnil -> failwith "fmt.Print cannot print nil"
+        | Tmany _ -> failwith "print tmany wip"
+      and lbl = new_label () in
+      ( ecode
+        (* calling convention: second argument goes into %rsi *)
+        ++ movq !%rdi !%rsi
+        (* calling convention: first argument goes into %rdi *)
+        ++ movq (ilab lbl) !%rdi
+        (* call to printf (with alignment) *)
+        ++ call "printf_"
+      , edata ++ label lbl ++ string fmt_str ))
   in
   concat_code_data
     ~start_code:(comment "[begin] call to fmt.Print")
     ~finish_code:(comment "[end] call to fmt.Print")
     compile_one_print
-    (* todo: je vois pas comment ça marche puisqu'on déroule jamais la liste en pas liste *)
     arg_list
 
 and compile_binop (binop : binop) (expr1 : expr) (expr2 : expr) : text * data =
@@ -199,6 +218,8 @@ let file ?debug:(b = false) (dl : Tast.tfile) : X86_64.program =
       ++ aligned_call_wrapper ~f:"malloc" ~newf:"malloc_"
       ++ aligned_call_wrapper ~f:"calloc" ~newf:"calloc_"
       ++ aligned_call_wrapper ~f:"printf" ~newf:"printf_"
-  ; data (* TODO static data here, such as string constants *)
+  ; data =
+      (* TODO static data here, such as string constants *)
+      label lbl_true ++ string "true" ++ label lbl_false ++ string "false" ++ data
   }
 ;;
