@@ -94,9 +94,9 @@ let rec compile_print (arg_list : expr list) : text (* code *) * data =
 
 and compile_binop (binop : binop) (expr1 : expr) (expr2 : expr) : text * data =
   (* compiled code of first expression stored in %rdi *)
-  let compiled1 = compile_expr expr1 in
+  let compiled_expr1 = compile_expr expr1 in
   (* compiled code of second expression stored in %rdi *)
-  let compiled2 = compile_expr expr2 in
+  let compiled_expr2 = compile_expr expr2 in
   (* specific code for each operation, at the beginning 
         - compiled code of expression 1 is in %r8
         - compiled code of expression 2 is in %rdi
@@ -138,16 +138,31 @@ and compile_binop (binop : binop) (expr1 : expr) (expr2 : expr) : text * data =
   in
   (* concatenate code of both expressions and of operation *)
   concat_code_data
-    ~start_code:(comment ("[begin] operation " ^ op_name))
-    ~finish_code:(comment ("[end] operation " ^ op_name))
+    ~start_code:(comment ("[begin] binary operation " ^ op_name))
+    ~finish_code:(comment ("[end] binary operation " ^ op_name))
     Fun.id
-    [ compiled1
+    [ compiled_expr1
     ; (* need to push result on the stack to save result of first expression (otherwise overwritten by next expression) *)
       pushq !%rdi, inline ""
-    ; compiled2
+    ; compiled_expr2
     ; popq r8, inline ""
     ; op_code, inline ""
     ]
+
+and compile_unop (unop : unop) (expr : expr) : text * data =
+  let compiled_expr = compile_expr expr in
+  let op_name, op_code =
+    match unop with
+    | Uneg -> "-", negq !%rdi
+    | Unot -> "!", notb !%dil ++ andb (imm 1) !%dil
+    | Uamp -> "&", failwith "wip amp"
+    | Ustar -> "*", failwith "wip star"
+  in
+  concat_code_data
+    ~start_code:(comment ("[begin] unary operation " ^ op_name))
+    ~finish_code:(comment ("[end] unary operation " ^ op_name))
+    Fun.id
+    [ compiled_expr; op_code, inline "" ]
 
 (* Generate code for each expressions *)
 and compile_expr (expr : expr) : text (* code *) * data =
@@ -162,7 +177,7 @@ and compile_expr (expr : expr) : text (* code *) * data =
        let lbl = new_label () in
        movq (ilab lbl) !%rdi, label lbl ++ string s)
   | TEbinop (binop, expr1, expr2) -> compile_binop binop expr1 expr2
-  | TEunop (unop, expr) -> failwith "unop wip"
+  | TEunop (unop, expr) -> compile_unop unop expr
   | TEnil -> failwith "nil wip"
   | TEnew typ -> failwith "new wip"
   | TEcall (f, args) -> failwith "call wip"
@@ -170,7 +185,30 @@ and compile_expr (expr : expr) : text (* code *) * data =
   | TEdot (expr, field) -> failwith "dot wip"
   | TEassign (arg, values) -> failwith "assign wip"
   | TEvars vars -> failwith "vars wip"
-  | TEif (b, e1, e2) -> failwith "if wip"
+  | TEif (b, e1, e2) ->
+    let compiled_condition = compile_expr b in
+    let lbl_end_if = new_label ()
+    and lbl_else = new_label () in
+    let ecode_if, edata_if = compile_expr e1
+    and ecode_else, edata_else = compile_expr e2 in
+    concat_code_data
+      ~start_code:(comment "[begin] if statement")
+      ~finish_code:(comment "[end] if statement")
+      Fun.id
+      [ compiled_condition
+      ; ( (* compare condition result (in %rdi) with 1 *)
+          cmpq (imm 1) !%rdi
+          (* if false, jump to else body *)
+          ++ jne lbl_else
+          (* otherwise, run the if body, and jump to the end of the if statement *)
+          ++ ecode_if
+          ++ jmp lbl_end_if
+          (* else body *)
+          ++ label lbl_else
+          ++ ecode_else
+          ++ label lbl_end_if
+        , edata_if ++ edata_else )
+      ]
   | TEreturn el -> failwith "return wip"
   | TEblock el -> concat_code_data compile_expr el
   | TEfor (b, e) -> failwith "for wip"
