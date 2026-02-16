@@ -69,6 +69,6 @@ let () =
     eprintf "error: %s\n@." msg;
     exit 1
   | e ->
-    eprintf "Anomaly: %s\n@." (Printexc.to_string e);
+    Ocolor_format.eprintf "@{<yellow>Anomaly@}: %s\n@." (Printexc.to_string e);
     exit 2
 ;;
