@@ -45,10 +45,10 @@ let lbl_true = new_label ()
 and lbl_false = new_label ()
 
 (* Print function : need to call printf for each argument with the good format *)
-let rec compile_print (arg_list : expr list) : text (* code *) * data =
+let rec compile_print (depth : int) (arg_list : expr list) : text (* code *) * data =
   let compile_one_print (arg : expr) : text * data =
     (* compile argument. after ecode, the argument value will be in %rdi *)
-    let ecode, edata = compile_expr arg in
+    let ecode, edata = compile_expr (depth + 1) arg in
     if arg.expr_typ = Tbool
     then
       ( ecode
@@ -87,12 +87,14 @@ let rec compile_print (arg_list : expr list) : text (* code *) * data =
       , edata ++ label lbl ++ string fmt_str ))
   in
   concat_code_data
-    ~start_code:(comment "[begin] call to fmt.Print")
-    ~finish_code:(comment "[end] call to fmt.Print")
+    ~start_code:(comment (String.make depth '-' ^ "[begin] call to fmt.Print"))
+    ~finish_code:(comment (String.make depth '-' ^ "[end] call to fmt.Print"))
     compile_one_print
     arg_list
 
-and compile_binop (binop : binop) (expr1 : expr) (expr2 : expr) : text * data =
+and compile_binop (depth : int) (binop : binop) (expr1 : expr) (expr2 : expr)
+  : text * data
+  =
   (* specific code for each operation, at the beginning 
       - resulting value of expression 1 is in %r8
       - resulting value of expression 2 is in %rdi
@@ -134,23 +136,22 @@ and compile_binop (binop : binop) (expr1 : expr) (expr2 : expr) : text * data =
   in
   (* concatenate code of both expressions and of operation *)
   concat_code_data
-    ~start_code:(comment ("[begin] binary operation " ^ op_name))
-    ~finish_code:(comment ("[end] binary operation " ^ op_name))
+    ~start_code:(comment (String.make depth '-' ^ "[begin] binary operation " ^ op_name))
+    ~finish_code:(comment (String.make depth '-' ^ "[end] binary operation " ^ op_name))
     Fun.id
     [ (* compiled code of first expression, will store result in %rdi *)
-      compile_expr expr1
+      compile_expr (depth + 1) expr1
     ; (* need to push result on the stack to save result of first expression (otherwise overwritten by next expression) *)
       pushq !%rdi, inline ""
     ; (* compiled code of second expression, will store result in %rdi *)
-      compile_expr expr2
+      compile_expr (depth + 1) expr2
     ; (* restore the result of first expression in %r8 *)
       popq r8, inline ""
     ; (* now, %r8 contains the result of first expression, and %rdi the result of the second => we can use the binary operation code *)
       op_code, inline ""
     ]
 
-and compile_unop (unop : unop) (expr : expr) : text * data =
-  let compiled_expr = compile_expr expr in
+and compile_unop (depth : int) (unop : unop) (expr : expr) : text * data =
   let op_name, op_code =
     match unop with
     | Uneg -> "-", negq !%rdi
@@ -159,15 +160,15 @@ and compile_unop (unop : unop) (expr : expr) : text * data =
     | Ustar -> "*", failwith "wip star"
   in
   concat_code_data
-    ~start_code:(comment ("[begin] unary operation " ^ op_name))
-    ~finish_code:(comment ("[end] unary operation " ^ op_name))
+    ~start_code:(comment (String.make depth '-' ^ "[begin] unary operation " ^ op_name))
+    ~finish_code:(comment (String.make depth '-' ^ "[end] unary operation " ^ op_name))
     Fun.id
-    [ compiled_expr; op_code, inline "" ]
+    [ compile_expr (depth + 1) expr; op_code, inline "" ]
 
 (* Generate code for each expressions *)
-and compile_expr (expr : expr) : text (* code *) * data =
+and compile_expr (depth : int) (expr : expr) : text (* code *) * data =
   match expr.expr_desc with
-  | TEskip -> failwith "skip wip"
+  | TEskip -> nop, inline ""
   | TEconstant c ->
     (match c with
      (* if the expression has non-nil type, its value is stored in %rdi *)
@@ -176,8 +177,8 @@ and compile_expr (expr : expr) : text (* code *) * data =
      | Cstring s ->
        let lbl = new_label () in
        movq (ilab lbl) !%rdi, label lbl ++ string s)
-  | TEbinop (binop, expr1, expr2) -> compile_binop binop expr1 expr2
-  | TEunop (unop, expr) -> compile_unop unop expr
+  | TEbinop (binop, expr1, expr2) -> compile_binop (depth + 1) binop expr1 expr2
+  | TEunop (unop, expr) -> compile_unop (depth + 1) unop expr
   | TEnil -> failwith "nil wip"
   | TEnew typ -> failwith "new wip"
   | TEcall (f, args) -> failwith "call wip"
@@ -186,14 +187,14 @@ and compile_expr (expr : expr) : text (* code *) * data =
   | TEassign (arg, values) -> failwith "assign wip"
   | TEvars vars -> failwith "vars wip"
   | TEif (b, e1, e2) ->
-    let compiled_condition = compile_expr b in
+    let compiled_condition = compile_expr (depth + 1) b in
     let lbl_end_if = new_label ()
     and lbl_else = new_label () in
-    let ecode_if, edata_if = compile_expr e1
-    and ecode_else, edata_else = compile_expr e2 in
+    let ecode_if, edata_if = compile_expr (depth + 1) e1
+    and ecode_else, edata_else = compile_expr (depth + 1) e2 in
     concat_code_data
-      ~start_code:(comment "[begin] if statement")
-      ~finish_code:(comment "[end] if statement")
+      ~start_code:(comment (String.make depth '-' ^ "[begin] if statement"))
+      ~finish_code:(comment (String.make depth '-' ^ "[end] if statement"))
       Fun.id
       [ compiled_condition
       ; ( (* compare condition result (in %rdi) with 0 *)
@@ -210,14 +211,14 @@ and compile_expr (expr : expr) : text (* code *) * data =
         , edata_if ++ edata_else )
       ]
   | TEreturn el -> failwith "return wip"
-  | TEblock el -> concat_code_data compile_expr el
+  | TEblock el -> concat_code_data (compile_expr (depth + 1)) el
   | TEfor (b, e) -> failwith "for wip"
-  | TEprint args -> compile_print args
+  | TEprint args -> compile_print (depth + 1) args
   | TEincdec (e, incdec) -> failwith "incdec wip"
 ;;
 
 let compile_func tfunc tbody : text (* code *) * data =
-  let body_code, body_data = compile_expr tbody in
+  let body_code, body_data = compile_expr 0 tbody in
   let code =
     label tfunc.fn_name
     ++ pushq !%rbp
