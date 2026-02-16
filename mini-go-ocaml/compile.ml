@@ -55,18 +55,18 @@ let rec compile_print (arg_list : expr list) : text (* code *) * data =
         (* put the label for string "true" in %rax and the label for string "false" in %rbx *)
         ++ movq (ilab lbl_true) !%rax
         ++ movq (ilab lbl_false) !%rbx
-        (* compare the boolean value with 1 (true) *)
-        ++ cmpq (imm 1) !%rdi
+        (* compare the boolean value with 0 (false) *)
+        ++ cmpq (imm 0) !%rdi
         (* based on the comparison, move either %rax or %rbx in %rdi *)
         (* this way, the first argument of printf (%rdi) is either the label for string "true" or the label for string "false" *)
         (* according to the value of the boolean *)
-        ++ cmove !%rax !%rdi
-        ++ cmovne !%rbx !%rdi
+        ++ cmovne !%rax !%rdi
+        ++ cmove !%rbx !%rdi
         (* call to printf (with alignment) *)
         ++ call "printf_"
       , edata )
     else (
-      (* get the format of the element to print *)
+      (* get the format string corresponding to the element to print *)
       let fmt_str =
         match arg.expr_typ with
         | Tbool -> failwith "unreachable"
@@ -93,14 +93,10 @@ let rec compile_print (arg_list : expr list) : text (* code *) * data =
     arg_list
 
 and compile_binop (binop : binop) (expr1 : expr) (expr2 : expr) : text * data =
-  (* compiled code of first expression stored in %rdi *)
-  let compiled_expr1 = compile_expr expr1 in
-  (* compiled code of second expression stored in %rdi *)
-  let compiled_expr2 = compile_expr expr2 in
   (* specific code for each operation, at the beginning 
-        - compiled code of expression 1 is in %r8
-        - compiled code of expression 2 is in %rdi
-    *)
+      - resulting value of expression 1 is in %r8
+      - resulting value of expression 2 is in %rdi
+  *)
   let op_name, op_code =
     match binop with
     | Badd -> "+", addq !%r8 !%rdi
@@ -112,20 +108,20 @@ and compile_binop (binop : binop) (expr1 : expr) (expr2 : expr) : text * data =
     | Bdiv ->
       ( "/"
       , (* integer signed division 
-                - dividend: rdx:rax
-                - divisor: first operand 
-                - quotient: rax <- result
-                - remainder: rdx
-          *)
+            - dividend: rdx:rax
+            - divisor: first operand 
+            - quotient: rax <- result
+            - remainder: rdx
+        *)
         xorq !%rdx !%rdx ++ movq !%r8 !%rax ++ idivq !%rdi ++ movq !%rax !%rdi )
     | Bmod ->
       ( "%"
       , (* integer signed division 
-                - dividend: rdx:rax
-                - divisor: first operand 
-                - quotient: rax
-                - remainder: rdx <- result
-          *)
+            - dividend: rdx:rax
+            - divisor: first operand 
+            - quotient: rax
+            - remainder: rdx <- result
+        *)
         xorq !%rdx !%rdx ++ movq !%r8 !%rax ++ idivq !%rdi ++ movq !%rdx !%rdi )
     | Beq -> "=", cmpq !%r8 !%rdi ++ sete !%dil
     | Bne -> "!=", cmpq !%r8 !%rdi ++ setne !%dil
@@ -141,12 +137,16 @@ and compile_binop (binop : binop) (expr1 : expr) (expr2 : expr) : text * data =
     ~start_code:(comment ("[begin] binary operation " ^ op_name))
     ~finish_code:(comment ("[end] binary operation " ^ op_name))
     Fun.id
-    [ compiled_expr1
+    [ (* compiled code of first expression, will store result in %rdi *)
+      compile_expr expr1
     ; (* need to push result on the stack to save result of first expression (otherwise overwritten by next expression) *)
       pushq !%rdi, inline ""
-    ; compiled_expr2
-    ; popq r8, inline ""
-    ; op_code, inline ""
+    ; (* compiled code of second expression, will store result in %rdi *)
+      compile_expr expr2
+    ; (* restore the result of first expression in %r8 *)
+      popq r8, inline ""
+    ; (* now, %r8 contains the result of first expression, and %rdi the result of the second => we can use the binary operation code *)
+      op_code, inline ""
     ]
 
 and compile_unop (unop : unop) (expr : expr) : text * data =
@@ -196,10 +196,10 @@ and compile_expr (expr : expr) : text (* code *) * data =
       ~finish_code:(comment "[end] if statement")
       Fun.id
       [ compiled_condition
-      ; ( (* compare condition result (in %rdi) with 1 *)
-          cmpq (imm 1) !%rdi
-          (* if false, jump to else body *)
-          ++ jne lbl_else
+      ; ( (* compare condition result (in %rdi) with 0 *)
+          cmpq (imm 0) !%rdi
+          (* if false (equals 0), jump to else body *)
+          ++ je lbl_else
           (* otherwise, run the if body, and jump to the end of the if statement *)
           ++ ecode_if
           ++ jmp lbl_end_if
