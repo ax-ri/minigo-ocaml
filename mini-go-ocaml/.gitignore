@@ -2,3 +2,4 @@ _build/
 *.exe
 test
 test.s
+test.go
