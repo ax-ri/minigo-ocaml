@@ -8,7 +8,7 @@ type incdec = Ast.incdec
 type function_ =
   { fn_name : string
   ; fn_params : var list
-  ; fn_typ : typ (* note: changed from 'typ list' to 'typ' *)
+  ; fn_typ : typ list
   }
 
 and structure =

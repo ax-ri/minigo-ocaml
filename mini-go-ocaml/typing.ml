@@ -104,13 +104,6 @@ module TypeHelpers = struct
     | PTptr t -> Tptr (typ_of_ptyp tenv t)
   ;;
 
-  (* convert an AST type list to a TAST type (using TMany) *)
-  let typ_of_ptyp_list (tenv : TypeEnv.t) (types : ptyp list) : typ =
-    match types with
-    | [ hd ] -> typ_of_ptyp tenv hd
-    | l -> Tmany (l |> List.map (typ_of_ptyp tenv))
-  ;;
-
   (* convert a TAST type list to a TAST type *)
   let typ_of_typ_list (types : typ list) : typ =
     match types with
@@ -118,12 +111,14 @@ module TypeHelpers = struct
     | l -> Tmany l
   ;;
 
-  (* convert a TAST type to a TAST type list *)
-  let typ_list_of_typ (typ : typ) : typ list =
+  let map_typ_to_typ_list (f : typ -> 'a) (typ : typ) : 'a list =
     match typ with
-    | Tmany l -> l
-    | t -> [ t ]
+    | Tmany l -> l |> List.map f
+    | t -> [ f t ]
   ;;
+
+  (* convert a TAST type to a TAST type list *)
+  let typ_list_of_typ (typ : typ) : typ list = map_typ_to_typ_list Fun.id typ
 
   (* equality operator for TAST types, because the structural operator (=) sometimes fails for recursive types *)
   let rec are_typ_equals (a : typ) (b : typ) : bool =
@@ -344,11 +339,7 @@ let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
            if f.fn_params = []
            then errorm ~loc "too much arguments for function '%s'" f.fn_name;
            let g = expr tenv pecall in
-           let g_returned_types =
-             match g.expr_typ with
-             | Tmany l -> l
-             | t -> [ t ]
-           in
+           let g_returned_types = TypeHelpers.typ_list_of_typ g.expr_typ in
            List.iter2
              (fun param arg_typ ->
                 if not (TypeHelpers.are_typ_equals param.v_typ arg_typ)
@@ -378,7 +369,9 @@ let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
                 f.fn_name);
            pel |> List.map (expr tenv)
        in
-       { expr_desc = TEcall (f, arguments); expr_typ = f.fn_typ })
+       { expr_desc = TEcall (f, arguments)
+       ; expr_typ = TypeHelpers.typ_of_typ_list f.fn_typ
+       })
   | PEident id ->
     (match Hashtbl.find_opt tenv.structures id.id with
      | None ->
@@ -418,9 +411,7 @@ let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
       match right_pexpr with
       | [ ({ pexpr_desc = PEcall (id, arg); _ } as pecall) ] ->
         let f = expr tenv pecall in
-        (match f.expr_typ with
-         | Tmany l -> l |> List.map (fun x -> f, x)
-         | t -> [ f, t ])
+        TypeHelpers.map_typ_to_typ_list (fun x -> f, x) f.expr_typ
       | _ ->
         right_pexpr
         |> List.map (fun pe ->
@@ -683,7 +674,7 @@ let file ~debug:b ((imp, dl) : Ast.pfile) : Tast.tfile =
             pf_params
             |> List.map (fun ({ id; loc }, ptyp) ->
               new_var id loc (TypeHelpers.typ_of_ptyp tenv ptyp))
-        ; fn_typ = TypeHelpers.typ_of_ptyp_list tenv pf_typ
+        ; fn_typ = pf_typ |> List.map (TypeHelpers.typ_of_ptyp tenv)
         }
       in
       (* add it to the environment *)
@@ -725,14 +716,14 @@ let file ~debug:b ((imp, dl) : Ast.pfile) : Tast.tfile =
       tenv.fmt_used <- tenv.fmt_used || f_env.fmt_used;
       (* Additionally, we check: *)
       (*  - that every return statement in b returns a list of m values of the expected types τ1′, ..., τm′ *)
-      if not (Helpers.are_returns_homogeneous f.fn_typ body)
+      if not (Helpers.are_returns_homogeneous (TypeHelpers.typ_of_typ_list f.fn_typ) body)
       then
         errorm
           ~loc:pf_name.loc
           "in function '%s': different types are returned"
           pf_name.id;
       (*  - if m > 0, that any control-flow branch in b reaches a return statement; *)
-      if f.fn_typ <> Tmany [] && not (Helpers.check_all_branches_reach_return body)
+      if f.fn_typ <> [] && not (Helpers.check_all_branches_reach_return body)
       then
         errorm
           ~loc:pf_name.loc
@@ -756,7 +747,7 @@ let file ~debug:b ((imp, dl) : Ast.pfile) : Tast.tfile =
    | None -> errorm "missing required 'main' function"
    | Some f ->
      (match f.fn_params, f.fn_typ with
-      | [], Tmany [] -> ()
+      | [], [] -> ()
       | _ -> errorm "'main' function must have no parameter and no return type"));
   if tenv.import_fmt && not tenv.fmt_used then errorm "module 'fmt' imported but not used";
   (* build the final typed ast with the structures and functions *)
