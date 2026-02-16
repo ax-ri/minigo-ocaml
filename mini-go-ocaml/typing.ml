@@ -304,6 +304,10 @@ let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
        { expr_desc = TEunop (unop, te); expr_typ = Tbool }
      | Uamp ->
        let te = expr_left_value tenv pe in
+       (* if the operand is a variable v, retain the fact that &v is used *)
+       (match te.expr_desc with
+        | TEident v -> v.v_addr <- true
+        | _ -> ());
        { expr_desc = TEunop (unop, te); expr_typ = Tptr te.expr_typ }
      | Ustar -> expr_left_value tenv pexpr)
   | PEnil -> { expr_desc = TEnil; expr_typ = Tnil }
@@ -570,7 +574,7 @@ and
   | _ -> errorm ~loc:pe.pexpr_loc "cannot use this value as a left value"
 
 and
-    (* auxiliary function to deduce the types of a list of variables (used by PEVars) *)
+    (* auxiliary function to deduce the types of a list of variables (used for PEVars) *)
       find_var_types
       (tenv : TypeEnv.t)
       (loc : location)
@@ -635,7 +639,7 @@ and
     List.init (List.length ident_list) (fun _ -> tau)
 ;;
 
-(* top-level typing rule : convert an AST file to a TAST file *)
+(* top-level typing rule: convert an AST file to a TAST file *)
 let file ~debug:b ((imp, dl) : Ast.pfile) : Tast.tfile =
   debug := b;
   let tenv = TypeEnv.create imp in
