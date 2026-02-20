@@ -4,7 +4,6 @@ open Format
 open Ast
 open Tast
 open X86_64
-open X86_64
 
 let debug = ref false
 let iter f = List.fold_left (fun code x -> code ++ f x) nop
@@ -17,8 +16,20 @@ let new_label =
     "L_" ^ string_of_int !r
 ;;
 
+let rec expr_list_to_label (acc : label) (expr_list : expr list) : label =
+  match expr_list with
+  | [] -> acc
+  | t :: q ->
+    let name, ofs =
+      match t.expr_desc with
+      | TEident v -> v.v_name, string_of_int v.v_ofs
+      | _ -> " other ", "  ofs "
+    in
+    expr_list_to_label (acc ^ " '" ^ name ^ "' (ofs=" ^ ofs ^ ")") q
+;;
+
 (* Iterate a list with a function to produce a tuple (code, data) and concatenate together the resulting codes and data.
-Optional start and finish element could be added
+  Optional start and finish element could be added
 *)
 let concat_code_data
       ?(start_code = nop)
@@ -41,16 +52,50 @@ let concat_code_data
   code ++ finish_code, data ++ finish_data
 ;;
 
+(* Create label for each format string needed *)
 let lbl_true = new_label ()
 and lbl_false = new_label ()
+and lbl_nil = new_label ()
+and lbl_int = new_label ()
+and lbl_string = new_label ()
+and lbl_ptr = new_label ()
+
+let print_simple_value (ecode : text) (edata : data) (fmt_str : label) =
+  ( ecode
+    (* calling convention: second argument goes into %rsi *)
+    ++ movq !%rdi !%rsi
+    (* calling convention: first argument goes into %rdi *)
+    ++ movq (ilab fmt_str) !%rdi
+    (* call to printf (with alignment) *)
+    ++ call "printf_"
+  , edata )
+;;
+
+let add_space_to_print (arg_list : expr list) : expr list =
+  let space = { expr_desc = TEconstant (Cstring " "); expr_typ = Tstring } in
+  let rec add_space (acc : expr list) (list : expr list) : expr list =
+    match list with
+    | [] -> List.rev acc
+    | t :: [] -> List.rev (t :: acc)
+    | t :: r :: q ->
+      if t.expr_typ = Tstring
+      then add_space (t :: acc) (r :: q)
+      else if r.expr_typ = Tstring
+      then add_space (r :: t :: acc) q
+      else add_space (space :: t :: acc) (r :: q)
+  in
+  add_space [] arg_list
+;;
 
 (* Print function : need to call printf for each argument with the good format *)
-let rec compile_print (depth : int) (arg_list : expr list) : text (* code *) * data =
+let rec compile_print (depth : int) (offset : int ref) (arg_list : expr list)
+  : text (* code *) * data
+  =
   let compile_one_print (arg : expr) : text * data =
     (* compile argument. after ecode, the argument value will be in %rdi *)
-    let ecode, edata = compile_expr (depth + 1) arg in
-    if arg.expr_typ = Tbool
-    then
+    let ecode, edata = compile_expr (depth + 1) offset arg in
+    match arg.expr_typ with
+    | Tbool ->
       ( ecode
         (* put the label for string "true" in %rax and the label for string "false" in %rbx *)
         ++ movq (ilab lbl_true) !%rax
@@ -65,34 +110,38 @@ let rec compile_print (depth : int) (arg_list : expr list) : text (* code *) * d
         (* call to printf (with alignment) *)
         ++ call "printf_"
       , edata )
-    else (
-      (* get the format string corresponding to the element to print *)
-      let fmt_str =
-        match arg.expr_typ with
-        | Tbool -> failwith "unreachable"
-        | Tint -> "%lld"
-        | Tstring -> "%s"
-        | Tptr _ -> "%p"
-        | Tstruct _ -> failwith "fmt.Print cannot print structures"
-        | Tnil -> failwith "fmt.Print cannot print nil"
-        | Tmany _ -> failwith "print tmany wip"
-      and lbl = new_label () in
+    | Tint -> print_simple_value ecode edata lbl_int
+    | Tstring -> print_simple_value ecode edata lbl_string
+    | Tptr _ ->
       ( ecode
-        (* calling convention: second argument goes into %rsi *)
-        ++ movq !%rdi !%rsi
-        (* calling convention: first argument goes into %rdi *)
-        ++ movq (ilab lbl) !%rdi
+        (* put the label for string "<nil>" in %rax and the label for string "%p" (pointer) in %rbx *)
+        ++ movq (ilab lbl_nil) !%rax
+        ++ movq (ilab lbl_ptr) !%rbx
+        (* compare the pointer value with 0 (nil) *)
+        ++ cmpq (imm 0) !%rdi
+        (* the first argument of printf (%rdi) is either the label for string "<nil>" or the format string "%p" for a pointer according to the value of the boolean *)
+        ++ cmove !%rax !%rdi
+        ++ cmovne !%rdi !%rsi
+        ++ cmovne !%rbx !%rdi
         (* call to printf (with alignment) *)
         ++ call "printf_"
-      , edata ++ label lbl ++ string fmt_str ))
+      , edata )
+    | Tstruct _ -> failwith "fmt.Print cannot print structures yet"
+    | Tnil -> print_simple_value ecode edata lbl_nil
+    | Tmany _ -> failwith "print tmany wip"
   in
   concat_code_data
     ~start_code:(comment (String.make depth '-' ^ "[begin] call to fmt.Print"))
     ~finish_code:(comment (String.make depth '-' ^ "[end] call to fmt.Print"))
     compile_one_print
-    arg_list
+    (add_space_to_print arg_list)
 
-and compile_binop (depth : int) (binop : binop) (expr1 : expr) (expr2 : expr)
+and compile_binop
+      (depth : int)
+      (offset : int ref)
+      (binop : binop)
+      (expr1 : expr)
+      (expr2 : expr)
   : text * data
   =
   (* specific code for each operation, at the beginning 
@@ -140,18 +189,20 @@ and compile_binop (depth : int) (binop : binop) (expr1 : expr) (expr2 : expr)
     ~finish_code:(comment (String.make depth '-' ^ "[end] binary operation " ^ op_name))
     Fun.id
     [ (* compiled code of first expression, will store result in %rdi *)
-      compile_expr (depth + 1) expr1
+      compile_expr (depth + 1) offset expr1
     ; (* need to push result on the stack to save result of first expression (otherwise overwritten by next expression) *)
       pushq !%rdi, inline ""
     ; (* compiled code of second expression, will store result in %rdi *)
-      compile_expr (depth + 1) expr2
+      compile_expr (depth + 1) offset expr2
     ; (* restore the result of first expression in %r8 *)
       popq r8, inline ""
     ; (* now, %r8 contains the result of first expression, and %rdi the result of the second => we can use the binary operation code *)
       op_code, inline ""
     ]
 
-and compile_unop (depth : int) (unop : unop) (expr : expr) : text * data =
+and compile_unop (depth : int) (offset : int ref) (unop : unop) (expr : expr)
+  : text * data
+  =
   let op_name, op_code =
     match unop with
     | Uneg -> "-", negq !%rdi
@@ -163,10 +214,10 @@ and compile_unop (depth : int) (unop : unop) (expr : expr) : text * data =
     ~start_code:(comment (String.make depth '-' ^ "[begin] unary operation " ^ op_name))
     ~finish_code:(comment (String.make depth '-' ^ "[end] unary operation " ^ op_name))
     Fun.id
-    [ compile_expr (depth + 1) expr; op_code, inline "" ]
+    [ compile_expr (depth + 1) offset expr; op_code, inline "" ]
 
 (* Generate code for each expressions *)
-and compile_expr (depth : int) (expr : expr) : text (* code *) * data =
+and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *) * data =
   match expr.expr_desc with
   | TEskip -> nop, inline ""
   | TEconstant c ->
@@ -177,21 +228,55 @@ and compile_expr (depth : int) (expr : expr) : text (* code *) * data =
      | Cstring s ->
        let lbl = new_label () in
        movq (ilab lbl) !%rdi, label lbl ++ string s)
-  | TEbinop (binop, expr1, expr2) -> compile_binop (depth + 1) binop expr1 expr2
-  | TEunop (unop, expr) -> compile_unop (depth + 1) unop expr
-  | TEnil -> failwith "nil wip"
+  | TEbinop (binop, expr1, expr2) -> compile_binop (depth + 1) offset binop expr1 expr2
+  | TEunop (unop, expr) -> compile_unop (depth + 1) offset unop expr
+  | TEnil -> xorq !%rdi !%rdi, inline ""
   | TEnew typ -> failwith "new wip"
   | TEcall (f, args) -> failwith "call wip"
-  | TEident var -> failwith "var wip"
+  | TEident var -> movq (ind ~ofs:var.v_ofs rbp) !%rdi, inline ""
   | TEdot (expr, field) -> failwith "dot wip"
-  | TEassign (arg, values) -> failwith "assign wip"
-  | TEvars vars -> failwith "vars wip"
+  | TEassign (vars, values) ->
+    (* store value expressions into the variable's offset *)
+    let assignments =
+      match values with
+      | [ { expr_desc = TEcall (id, arg); _ } ] -> failwith "function assign wip"
+      | values ->
+        List.map2
+          (fun var value ->
+             (* compute assignment expression and stored it in the variable offset on the stack *)
+             let value_assembly = compile_expr (depth + 1) offset value in
+             match var.expr_desc with
+             | TEident var ->
+               let code = movq !%rdi (ind ~ofs:var.v_ofs rbp) in
+               concat_code_data Fun.id [ value_assembly; code, inline "" ]
+             | _ -> failwith "struct assign wip")
+          vars
+          values
+    in
+    concat_code_data
+      ~start_code:
+        (comment
+           (String.make depth '-'
+            ^ "[begin] variables assignment for"
+            ^ expr_list_to_label "" vars))
+      ~finish_code:(comment (String.make depth '-' ^ "[end] variables assignment"))
+      Fun.id
+      assignments
+  | TEvars vars ->
+    (* store each variable's offset and decrement stack pointer *)
+    vars
+    |> List.iter (fun var ->
+      offset := !offset - 8;
+      var.v_ofs <- !offset);
+    ( comment " increment stack pointer to store variables"
+      ++ subq (imm (8 * List.length vars)) !%rsp
+    , inline "" )
   | TEif (b, e1, e2) ->
-    let compiled_condition = compile_expr (depth + 1) b in
+    let compiled_condition = compile_expr (depth + 1) offset b in
     let lbl_end_if = new_label ()
     and lbl_else = new_label () in
-    let ecode_if, edata_if = compile_expr (depth + 1) e1
-    and ecode_else, edata_else = compile_expr (depth + 1) e2 in
+    let ecode_if, edata_if = compile_expr (depth + 1) offset e1
+    and ecode_else, edata_else = compile_expr (depth + 1) offset e2 in
     concat_code_data
       ~start_code:(comment (String.make depth '-' ^ "[begin] if statement"))
       ~finish_code:(comment (String.make depth '-' ^ "[end] if statement"))
@@ -211,14 +296,15 @@ and compile_expr (depth : int) (expr : expr) : text (* code *) * data =
         , edata_if ++ edata_else )
       ]
   | TEreturn el -> failwith "return wip"
-  | TEblock el -> concat_code_data (compile_expr (depth + 1)) el
+  | TEblock el -> concat_code_data (compile_expr (depth + 1) offset) el
   | TEfor (b, e) -> failwith "for wip"
-  | TEprint args -> compile_print (depth + 1) args
+  | TEprint args -> compile_print (depth + 1) offset args
   | TEincdec (e, incdec) -> failwith "incdec wip"
 ;;
 
 let compile_func tfunc tbody : text (* code *) * data =
-  let body_code, body_data = compile_expr 0 tbody in
+  let offset = ref 0 in
+  let body_code, body_data = compile_expr 0 offset tbody in
   let code =
     label tfunc.fn_name
     ++ pushq !%rbp
@@ -259,6 +345,19 @@ let file ?debug:(b = false) (dl : Tast.tfile) : X86_64.program =
       ++ aligned_call_wrapper ~f:"printf" ~newf:"printf_"
   ; data =
       (* TODO static data here, such as string constants *)
-      label lbl_true ++ string "true" ++ label lbl_false ++ string "false" ++ data
+      inline "\n# global data for all code\n"
+      ++ label lbl_true
+      ++ string "true"
+      ++ label lbl_false
+      ++ string "false"
+      ++ label lbl_nil
+      ++ string "<nil>"
+      ++ label lbl_int
+      ++ string "%lld"
+      ++ label lbl_string
+      ++ string "%s"
+      ++ label lbl_ptr
+      ++ string "%p"
+      ++ data
   }
 ;;
