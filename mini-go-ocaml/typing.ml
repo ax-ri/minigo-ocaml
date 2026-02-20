@@ -1,6 +1,5 @@
 (** Static type checking of Mini Go programs *)
 
-open Format
 open Lib
 open Ast
 open Tast
@@ -198,6 +197,111 @@ module Helpers = struct
   ;;
 end
 
+module PreRewrite = struct
+  type gen_id =
+    | Id of ident
+    | Dot of (string * gen_id)
+
+  (* default values based on types:
+      - int:    0
+      - bool:   false
+      - string: ""
+      - *tau:   nil 
+  *)
+  let default_type_value (pexpr_loc : location) (tau : typ) : pexpr =
+    match tau with
+    | Tint -> { pexpr_desc = PEconstant (Cint 0L); pexpr_loc }
+    | Tbool -> { pexpr_desc = PEconstant (Cbool false); pexpr_loc }
+    | Tstring -> { pexpr_desc = PEconstant (Cstring ""); pexpr_loc }
+    | Tptr _ -> { pexpr_desc = PEnil; pexpr_loc }
+    | _ -> failwith "unreachable"
+  ;;
+
+  let rec generate_initialization_data
+            (pexpr_loc : location)
+            (tau_opt : typ option)
+            (ident_list : ident list)
+            (pexpr_list : pexpr list)
+    : gen_id list * pexpr list
+    =
+    let gen_simple_id_list () : gen_id list = ident_list |> List.map (fun id -> Id id) in
+    let (ident_pexpr_list, init_values) : gen_id list * pexpr list =
+      match tau_opt, pexpr_list with
+      | Some (Tstruct s), [] ->
+        let ident_pexpr_list, init_values =
+          ident_list
+          |> List.map (fun id ->
+            s.s_list
+            |> List.map (fun f ->
+              let ident_pexpr_list, init_values =
+                generate_initialization_data
+                  pexpr_loc
+                  (Some f.f_typ)
+                  [ { id = f.f_name; loc = pexpr_loc } ]
+                  []
+              in
+              let ident_pexpr_list =
+                ident_pexpr_list |> List.map (fun gid -> Dot (id.id, gid))
+              in
+              ident_pexpr_list, init_values)
+            |> List.split)
+          |> List.split
+        in
+        ( ident_pexpr_list |> List.concat |> List.concat
+        , init_values |> List.concat |> List.concat )
+      | Some (Tstruct s), _ ->
+        errorm ~loc:pexpr_loc "structure initialization is not supported"
+      | Some tau, [] ->
+        ( gen_simple_id_list ()
+        , List.init (List.length ident_list) (fun _ -> default_type_value pexpr_loc tau) )
+      | Some tau, pexpr_list -> gen_simple_id_list (), pexpr_list
+      | None, [] ->
+        errorm
+          ~loc:pexpr_loc
+          "need either type or initialization value for variable declaration"
+      | None, pexpr_list -> gen_simple_id_list (), pexpr_list
+    in
+    ident_pexpr_list, init_values
+  ;;
+
+  let pexpr_of_gen_id (pexpr_loc : location) (gid : gen_id) : pexpr =
+    let rec flatten_rev (acc : ident list) (gid : gen_id) : ident list =
+      match gid with
+      | Id id -> id :: acc
+      | Dot (s, d) -> flatten_rev ({ id = s; loc = pexpr_loc } :: acc) d
+    in
+    let l = flatten_rev [] gid in
+    List.fold_right
+      (fun id (acc : pexpr) : pexpr ->
+         match acc with
+         | { pexpr_desc = PEnil; _ } -> { pexpr_desc = PEident id; pexpr_loc = id.loc }
+         | _ -> { pexpr_desc = PEdot (acc, id); pexpr_loc = id.loc })
+      l
+      { pexpr_desc = PEnil; pexpr_loc }
+  ;;
+
+  let expand_vars_initialization (tenv : TypeEnv.t) (block_exprs : pexpr list)
+    : pexpr list
+    =
+    let rec aux (acc : pexpr list) (pexpr_list : pexpr list) : pexpr list =
+      match pexpr_list with
+      | [] -> List.rev acc
+      | ({ pexpr_desc = PEvars (ident_list, ptyp_opt, pexpr_list); pexpr_loc } as expr)
+        :: q ->
+        let tau_opt = Option.map (TypeHelpers.typ_of_ptyp tenv) ptyp_opt in
+        let gen_id_list, init_values =
+          generate_initialization_data pexpr_loc tau_opt ident_list pexpr_list
+        in
+        let pexpr_desc =
+          PEassign (gen_id_list |> List.map (pexpr_of_gen_id pexpr_loc), init_values)
+        in
+        aux ({ pexpr_desc; pexpr_loc } :: expr :: acc) q
+      | s :: q -> aux (s :: acc) q
+    in
+    block_exprs |> aux []
+  ;;
+end
+
 (* expression typing function: convert an AST expression to a TAST expression *)
 (* this function also handles statements as they are not separated from expressions *)
 let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
@@ -242,7 +346,7 @@ let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
        then
          errorm
            ~loc:pexpr.pexpr_loc
-           "wrong types for binary operation '%s': both types are null"
+           "wrong types for binary operation '%s': both types are nil"
            (Pretty.binop binop);
        { expr_desc = TEbinop (binop, te1, te2); expr_typ = Tbool }
      | Blt | Ble | Bgt | Bge ->
@@ -301,7 +405,9 @@ let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
        let te = expr_left_value tenv pe in
        (* if the operand is a variable v, retain the fact that &v is used *)
        (match te.expr_desc with
-        | TEident v -> v.v_addr <- true
+        | TEident v ->
+          v.v_addr <- true;
+          v.v_used <- true
         | _ -> ());
        { expr_desc = TEunop (unop, te); expr_typ = Tptr te.expr_typ }
      | Ustar -> expr_left_value tenv pexpr)
@@ -337,7 +443,7 @@ let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
          (* actual parameters of function is another function -> need to get all the types of the second function first *)
          | [ ({ pexpr_desc = PEcall (id, params); pexpr_loc = loc } as pecall) ] ->
            if f.fn_params = []
-           then errorm ~loc "too much arguments for function '%s'" f.fn_name;
+           then errorm ~loc "too many arguments for function '%s'" f.fn_name;
            let g = expr tenv pecall in
            let g_returned_types = TypeHelpers.typ_list_of_typ g.expr_typ in
            List.iter2
@@ -374,36 +480,26 @@ let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
        })
   | PEident id ->
     (match Hashtbl.find_opt tenv.structures id.id with
+     | Some s -> { expr_desc = TEskip; expr_typ = Tstruct s }
      | None ->
        if id.id = "_" then errorm ~loc:pexpr.pexpr_loc "cannot use variable '_'";
-       expr_left_value tenv pexpr
-     | Some s -> { expr_desc = TEskip; expr_typ = Tstruct s })
+       (match Hashtbl.find_opt tenv.variables id.id with
+        | Some v -> v.v_used <- true
+        | None -> ());
+       expr_left_value tenv pexpr)
   | PEdot (pe, id) ->
     let te = expr tenv pe in
     (match te.expr_typ with
-     | Tstruct s ->
+     | Tstruct s | Tptr (Tstruct s) ->
        (match Hashtbl.find_opt s.s_fields id.id with
         | None ->
           errorm
             ~loc:pexpr.pexpr_loc
-            "structure '%a' has no field named '%s'"
-            Pretty.expr
-            te
+            "structure '%s' has no field named '%s'"
+            s.s_name
             id.id
         | Some field -> { expr_desc = TEdot (te, field); expr_typ = field.f_typ })
-     | Tptr (Tstruct s) ->
-       (match Hashtbl.find_opt s.s_fields id.id with
-        | None ->
-          errorm
-            ~loc:pexpr.pexpr_loc
-            "structure '%a' has no field named '%s'"
-            Pretty.expr
-            te
-            id.id
-        | Some field -> { expr_desc = TEdot (te, field); expr_typ = field.f_typ })
-     | _ as t ->
-       Format.printf "typ: %a\n" Pretty.typ t;
-       errorm ~loc:pexpr.pexpr_loc "accessing a field of a non-struct type")
+     | _ -> errorm ~loc:pexpr.pexpr_loc "accessing a field of a non-struct type")
   (**** statements ****)
   | PEassign (left_pexpr, right_pexpr) ->
     let left_expr = left_pexpr |> List.map (expr_left_value tenv)
@@ -498,23 +594,30 @@ let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
         acc
       (* process the current statement *)
       | s :: q ->
-        (* if the current statement contains variables declarations, update the list of block variables *)
+        let te = expr tenv s in
+        (* if the current statement contains variables declarations: *)
         let block_var_names =
           match s.pexpr_desc with
-          | PEvars (ident_decls, _, _) ->
+          | PEvars (ident_list, tau, pexpr_list) ->
+            (* - update the list of block variables *)
             let new_var_names =
-              ident_decls
+              ident_list
               |> List.map (fun { id; loc } ->
                 if id <> "_" && List.mem id block_var_names
                 then errorm ~loc "cannot redeclare a variable named '%s' in same block" id
                 else id)
             in
+            (* check for duplicates inside the identifier list *)
+            (match find_first_duplicate Fun.id new_var_names with
+             | Some id when id <> "_" ->
+               errorm ~loc:pexpr.pexpr_loc "cannot redeclare a variable named '%s'" id
+             | _ -> ());
             new_var_names @ block_var_names
           | _ -> block_var_names
         in
-        let te = expr tenv s in
         aux tenv q block_var_names (te :: acc)
     in
+    let pel = PreRewrite.expand_vars_initialization tenv pel in
     { expr_desc = TEblock (List.rev (aux tenv pel [] [])); expr_typ = Tnil }
   | PEfor (pe, b) ->
     let te = expr tenv pe in
@@ -525,6 +628,9 @@ let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
      | _ -> errorm ~loc:pexpr.pexpr_loc "conditional expression must be of boolean type")
   | PEincdec (pe, incdec) ->
     let te = expr_left_value tenv pe in
+    (match te.expr_desc with
+     | TEident v -> v.v_used <- true
+     | _ -> ());
     (match te.expr_typ with
      | Tint -> { expr_desc = TEincdec (te, incdec); expr_typ = Tint }
      | t ->
@@ -556,9 +662,7 @@ and
   | PEident id ->
     (match Hashtbl.find_opt tenv.variables id.id with
      | None -> errorm ~loc:pe.pexpr_loc "unbound variable '%s'" id.id
-     | Some v ->
-       v.v_used <- true;
-       { expr_desc = TEident v; expr_typ = v.v_typ })
+     | Some v -> { expr_desc = TEident v; expr_typ = v.v_typ })
   | PEdot (e, f) ->
     let _ = expr_left_value tenv e in
     expr tenv pe
