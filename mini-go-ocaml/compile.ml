@@ -16,16 +16,13 @@ let new_label =
     "L_" ^ string_of_int !r
 ;;
 
-let rec expr_list_to_label (acc : label) (expr_list : expr list) : label =
-  match expr_list with
-  | [] -> acc
-  | t :: q ->
-    let name, ofs =
-      match t.expr_desc with
-      | TEident v -> v.v_name, string_of_int v.v_ofs
-      | _ -> " other ", "  ofs "
-    in
-    expr_list_to_label (acc ^ " '" ^ name ^ "' (ofs=" ^ ofs ^ ")") q
+let rec expr_description (e : expr) : string =
+  let name, ofs =
+    match e.expr_desc with
+    | TEident v -> v.v_name, string_of_int v.v_ofs
+    | _ -> " other ", "  ofs "
+  in
+  " '" ^ name ^ "' (ofs=" ^ ofs ^ ")"
 ;;
 
 (* Iterate a list with a function to produce a tuple (code, data) and concatenate together the resulting codes and data.
@@ -236,33 +233,31 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
   | TEcall (f, args) -> failwith "call wip"
   | TEident var -> movq (ind ~ofs:var.v_ofs rbp) !%rdi, inline ""
   | TEdot (expr, field) -> failwith "dot wip"
-  | TEassign (vars, values) ->
+  | TEassign ([ var ], [ value ]) ->
     (* store value expressions on the stack at the variable's offset *)
-    let assignments =
-      match values with
-      | [ { expr_desc = TEcall (id, arg); _ } ] -> failwith "function assign wip"
+    let ecode, edata =
+      match value with
+      | { expr_desc = TEcall (id, arg); _ } -> failwith "function assign wip"
       | values ->
-        List.map2
-          (fun var value ->
-             (* compute assignment expression and store it on the stack at the variable's offset  *)
-             let compiled_expr = compile_expr (depth + 1) offset value in
-             match var.expr_desc with
-             | TEident var ->
-               let code = movq !%rdi (ind ~ofs:var.v_ofs rbp) in
-               concat_code_data Fun.id [ compiled_expr; code, inline "" ]
-             | _ -> failwith "struct assign wip")
-          vars
-          values
+        (* compute assignment expression and store it on the stack at the variable's offset  *)
+        let compiled_expr = compile_expr (depth + 1) offset value in
+        (match var.expr_desc with
+         | TEident v ->
+           let code = movq !%rdi (ind ~ofs:v.v_ofs rbp) in
+           concat_code_data Fun.id [ compiled_expr; code, inline "" ]
+         | _ -> failwith "struct assign wip")
     in
     concat_code_data
       ~start_code:
         (comment
            (String.make depth '-'
-            ^ "[begin] variables assignment for"
-            ^ expr_list_to_label "" vars))
+            ^ "[begin] variables assignment for "
+            ^ expr_description var))
       ~finish_code:(comment (String.make depth '-' ^ "[end] variables assignment"))
       Fun.id
-      assignments
+      [ ecode, edata ]
+  (* multiple assignment are rewritten into single ones *)
+  | TEassign (_, _) -> failwith "unreachable"
   | TEvars vars ->
     (* store each variable's offset and decrement stack pointer *)
     let vars_count = List.length vars in
