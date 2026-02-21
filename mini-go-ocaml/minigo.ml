@@ -47,9 +47,10 @@ let () =
     close_in c;
     if !parse_only then exit 0;
     let f = Typing.file ~debug f in
+    if debug then eprintf "Typing ok.@.Before rewrite (after typing):@.%a@." Pretty.file f;
     if type_only then exit 0;
     let f = Rewrite.file ~debug f in
-    if debug then eprintf "%a@." Pretty.file f;
+    if debug then eprintf "After rewrite:@.%a@." Pretty.file f;
     let code = Compile.file ~debug f in
     let c = open_out (Filename.chop_suffix file ".go" ^ ".s") in
     let fmt = formatter_of_out_channel c in

@@ -197,16 +197,15 @@ module Helpers = struct
   ;;
 end
 
-module PreRewrite = struct
-  type gen_id =
-    | Id of ident
-    | Dot of (string * gen_id)
-
+(* some rewriting on the base ast, performed before typing *)
+module PreRewrite : sig
+  val expand_vars_initialization : TypeEnv.t -> pexpr list -> pexpr list
+end = struct
   (* default values based on types:
-      - int:    0
-      - bool:   false
-      - string: ""
-      - *tau:   nil 
+      - int:     0
+      - bool:    false
+      - string:  ""
+      - pointer: nil 
   *)
   let default_type_value (pexpr_loc : location) (tau : typ) : pexpr =
     match tau with
@@ -217,88 +216,86 @@ module PreRewrite = struct
     | _ -> failwith "unreachable"
   ;;
 
+  (* generate a list of identifier and a list of values to assign to them, based on the type (if provided) or on the type of the expressions
+     given for initialization *)
   let rec generate_initialization_data
             (pexpr_loc : location)
             (tau_opt : typ option)
-            (ident_list : ident list)
-            (pexpr_list : pexpr list)
-    : gen_id list * pexpr list
+              (* identifier list (will be left side of the assign statement). need to be generated for structs *)
+            (ident_pexpr_list : pexpr list)
+              (* expressions provided for variables initialization (will be right side of assign statement). may be generated if not provided *)
+            (init_pexpr_list : pexpr list)
+    : pexpr list * pexpr list
     =
-    let gen_simple_id_list () : gen_id list = ident_list |> List.map (fun id -> Id id) in
-    let (ident_pexpr_list, init_values) : gen_id list * pexpr list =
-      match tau_opt, pexpr_list with
-      | Some (Tstruct s), [] ->
-        let ident_pexpr_list, init_values =
-          ident_list
-          |> List.map (fun id ->
-            s.s_list
-            |> List.map (fun f ->
-              let ident_pexpr_list, init_values =
-                generate_initialization_data
-                  pexpr_loc
-                  (Some f.f_typ)
-                  [ { id = f.f_name; loc = pexpr_loc } ]
-                  []
-              in
-              let ident_pexpr_list =
-                ident_pexpr_list |> List.map (fun gid -> Dot (id.id, gid))
-              in
-              ident_pexpr_list, init_values)
-            |> List.split)
-          |> List.split
-        in
-        ( ident_pexpr_list |> List.concat |> List.concat
-        , init_values |> List.concat |> List.concat )
-      | Some (Tstruct s), _ ->
-        errorm ~loc:pexpr_loc "structure initialization is not supported"
-      | Some tau, [] ->
-        ( gen_simple_id_list ()
-        , List.init (List.length ident_list) (fun _ -> default_type_value pexpr_loc tau) )
-      | Some tau, pexpr_list -> gen_simple_id_list (), pexpr_list
-      | None, [] ->
-        errorm
-          ~loc:pexpr_loc
-          "need either type or initialization value for variable declaration"
-      | None, pexpr_list -> gen_simple_id_list (), pexpr_list
-    in
-    ident_pexpr_list, init_values
+    (* select the case based on the given type (or not) and on the presence of a list with initialization values *)
+    match tau_opt, init_pexpr_list with
+    (* a struct type is given (and no init values) *)
+    | Some (Tstruct s), [] ->
+      (* for structures, we need to recursively generate init data (and identifiers list) for all the subfields *)
+      (* we iterate on each identifier and then on each field of the structure to generate an identifier list and init data, 
+         and then we concatenate the result in one multiple assignation (e.g. t.a, t.b = 0, 0) *)
+      let ident_pexpr_list, init_values =
+        ident_pexpr_list
+        |> List.map (fun ident_pexpr ->
+          s.s_list
+          |> List.map (fun f ->
+            generate_initialization_data
+              pexpr_loc
+              (Some f.f_typ)
+              [ { pexpr_desc = PEdot (ident_pexpr, { id = f.f_name; loc = pexpr_loc })
+                ; pexpr_loc
+                }
+              ]
+              [])
+          |> List.split)
+        |> List.split
+      in
+      ( ident_pexpr_list |> List.concat |> List.concat
+      , init_values |> List.concat |> List.concat )
+    (* a struct type is given with some init values => not supported *)
+    | Some (Tstruct s), _ ->
+      errorm ~loc:pexpr_loc "structure initialization is not supported"
+    (* a primitive (non-struct) type is given, with no init values => init with default values for this type *)
+    | Some tau, [] ->
+      ( ident_pexpr_list
+      , List.init (List.length ident_pexpr_list) (fun _ ->
+          default_type_value pexpr_loc tau) )
+    (* a primitive (non-struct) type is given, with some init values => do nothing as everything is already provided *)
+    | Some tau, pexpr_list -> ident_pexpr_list, pexpr_list
+    | None, [] ->
+      errorm
+        ~loc:pexpr_loc
+        "need either type or initialization value for variable declaration"
+    | None, pexpr_list -> ident_pexpr_list, pexpr_list
   ;;
 
-  let pexpr_of_gen_id (pexpr_loc : location) (gid : gen_id) : pexpr =
-    let rec flatten_rev (acc : ident list) (gid : gen_id) : ident list =
-      match gid with
-      | Id id -> id :: acc
-      | Dot (s, d) -> flatten_rev ({ id = s; loc = pexpr_loc } :: acc) d
-    in
-    let l = flatten_rev [] gid in
-    List.fold_right
-      (fun id (acc : pexpr) : pexpr ->
-         match acc with
-         | { pexpr_desc = PEnil; _ } -> { pexpr_desc = PEident id; pexpr_loc = id.loc }
-         | _ -> { pexpr_desc = PEdot (acc, id); pexpr_loc = id.loc })
-      l
-      { pexpr_desc = PEnil; pexpr_loc }
-  ;;
-
+  (* given a list of expressions (typically from a block), will scan for variables declaration and insert variables assignation immediately after,
+     in order to ensure that all declared variables are properly initialized (either with the provided expressions, or with the default value based on the type).
+   *)
   let expand_vars_initialization (tenv : TypeEnv.t) (block_exprs : pexpr list)
     : pexpr list
     =
     let rec aux (acc : pexpr list) (pexpr_list : pexpr list) : pexpr list =
       match pexpr_list with
       | [] -> List.rev acc
+      (* when seeing variables declaration, generate initialization data and add an assign statement *)
       | ({ pexpr_desc = PEvars (ident_list, ptyp_opt, pexpr_list); pexpr_loc } as expr)
         :: q ->
-        let tau_opt = Option.map (TypeHelpers.typ_of_ptyp tenv) ptyp_opt in
-        let gen_id_list, init_values =
-          generate_initialization_data pexpr_loc tau_opt ident_list pexpr_list
+        let tau_opt = Option.map (TypeHelpers.typ_of_ptyp tenv) ptyp_opt
+        and ident_pexpr_list =
+          ident_list |> List.map (fun id -> { pexpr_desc = PEident id; pexpr_loc })
         in
-        let pexpr_desc =
-          PEassign (gen_id_list |> List.map (pexpr_of_gen_id pexpr_loc), init_values)
+        let ident_pexpr_list, init_values =
+          generate_initialization_data pexpr_loc tau_opt ident_pexpr_list pexpr_list
         in
-        aux ({ pexpr_desc; pexpr_loc } :: expr :: acc) q
+        aux
+          ({ pexpr_desc = PEassign (ident_pexpr_list, init_values); pexpr_loc }
+           :: expr
+           :: acc)
+          q
       | s :: q -> aux (s :: acc) q
     in
-    block_exprs |> aux []
+    aux [] block_exprs
   ;;
 end
 
