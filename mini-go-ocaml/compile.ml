@@ -20,7 +20,8 @@ let rec expr_description (e : expr) : string =
   let name, ofs =
     match e.expr_desc with
     | TEident v -> v.v_name, string_of_int v.v_ofs
-    | _ -> " other ", "  ofs "
+    | TEunop (Ustar, e) -> "*(" ^ expr_description e ^ ")", ""
+    | _ -> "other", "ofs"
   in
   " '" ^ name ^ "' (ofs=" ^ ofs ^ ")"
 ;;
@@ -47,6 +48,13 @@ let concat_code_data
       ll
   in
   code ++ finish_code, data ++ finish_data
+;;
+
+let sizeof_typ (typ : typ) : int =
+  match typ with
+  | Tint | Tbool | Tstring | Tptr _ -> 8
+  | Tstruct _ -> failwith "struct size wip"
+  | Tnil | Tmany _ -> failwith "unreachable (sizeof_typ)"
 ;;
 
 (* Create label for each format string needed *)
@@ -205,8 +213,8 @@ and compile_unop (depth : int) (offset : int ref) (unop : unop) (expr : expr)
     match unop with
     | Uneg -> "-", negq !%rdi
     | Unot -> "!", notb !%dil ++ andb (imm 1) !%dil
-    | Uamp -> "&", failwith "wip amp"
-    | Ustar -> "*", failwith "wip star"
+    | Ustar -> "*", movq (ind rdi) !%rdi
+    | Uamp -> failwith "unreachable (unop &)"
   in
   concat_code_data
     ~start_code:(comment (String.make depth '-' ^ "[begin] unary operation " ^ op_name))
@@ -227,9 +235,18 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
        let lbl = new_label () in
        movq (ilab lbl) !%rdi, label lbl ++ string s)
   | TEbinop (binop, expr1, expr2) -> compile_binop (depth + 1) offset binop expr1 expr2
+  (* thanks to rewriting, the only case of '&' is before a '*' => directly compile the operand expression *)
+  (* (because &( *p ) <=> p ) *)
+  | TEunop (Uamp, { expr_desc = TEunop (Ustar, e); _ }) -> compile_expr depth offset e
   | TEunop (unop, expr) -> compile_unop (depth + 1) offset unop expr
   | TEnil -> xorq !%rdi !%rdi, inline ""
-  | TEnew typ -> failwith "new wip"
+  | TEnew typ ->
+    let typ_size = sizeof_typ typ in
+    ( comment (String.make depth '-' ^ "(TEnew)")
+      ++ movq (imm typ_size) !%rdi
+      ++ call "malloc_"
+      ++ movq !%rax !%rdi
+    , inline "" )
   | TEcall (f, args) -> failwith "call wip"
   | TEident var -> movq (ind ~ofs:var.v_ofs rbp) !%rdi, inline ""
   | TEdot (expr, field) -> failwith "dot wip"
@@ -238,26 +255,41 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
     let ecode, edata =
       match value with
       | { expr_desc = TEcall (id, arg); _ } -> failwith "function assign wip"
-      | values ->
+      | value ->
+        let value_ecode, value_edata = compile_expr (depth + 1) offset value in
         (match var.expr_desc with
          | TEident v ->
            (* compute assignment expression and store it on the stack at the variable's offset  *)
-           let ecode, edata = compile_expr (depth + 1) offset value in
-           ecode ++ movq !%rdi (ind ~ofs:v.v_ofs rbp), edata
+           ( value_ecode
+             ++ comment (String.make depth '-' ^ "ident assign")
+             ++ movq !%rdi (ind ~ofs:v.v_ofs rbp)
+           , value_edata )
          | TEdot _ -> failwith "struct field assign wip"
-         | _ -> failwith "unreachable")
+         | TEunop (Ustar, e) ->
+           let ecode, edata = compile_expr (depth + 1) offset e in
+           ( (* compute assignment expression and save it on the stack *)
+             value_ecode
+             ++ pushq !%rdi
+             (* compute the address (star operand) into rdi *)
+             ++ ecode
+             (* restore the assignment value to r8 and move it to the memory location contained in rdi *)
+             ++ comment (String.make depth '-' ^ "star assign")
+             ++ popq r8
+             ++ movq !%r8 (ind rdi)
+           , value_edata ++ edata )
+         | _ -> failwith "unreachable (TEassign)")
     in
     concat_code_data
       ~start_code:
         (comment
            (String.make depth '-'
-            ^ "[begin] variables assignment for "
+            ^ "[begin] variable assignment for"
             ^ expr_description var))
       ~finish_code:(comment (String.make depth '-' ^ "[end] variables assignment"))
       Fun.id
       [ ecode, edata ]
   (* multiple assignment are rewritten into single ones *)
-  | TEassign (_, _) -> failwith "unreachable"
+  | TEassign (_, _) -> failwith "unreachable (multiple TEassign)"
   | TEvars vars ->
     (* store each variable's offset and decrement stack pointer *)
     let vars_count = List.length vars in
@@ -308,7 +340,7 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
        let ecode, edata = compile_expr (depth + 1) offset e in
        ecode ++ incdec ++ movq !%rdi (ind ~ofs:v.v_ofs rbp), edata
      | TEdot _ -> failwith "struct incdec wip"
-     | _ -> failwith "unreachable")
+     | _ -> failwith "unreachable (TEincdec)")
 ;;
 
 let compile_func tfunc tbody : text (* code *) * data =

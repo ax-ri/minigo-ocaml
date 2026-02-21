@@ -71,5 +71,6 @@ let () =
     exit 1
   | e ->
     Ocolor_format.eprintf "@{<yellow>Anomaly@}: %s\n@." (Printexc.to_string e);
+    Printexc.print_backtrace Out_channel.stdout;
     exit 2
 ;;
