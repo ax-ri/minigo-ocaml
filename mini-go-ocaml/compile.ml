@@ -60,38 +60,39 @@ and lbl_int = new_label ()
 and lbl_string = new_label ()
 and lbl_ptr = new_label ()
 
-let print_simple_value (ecode : text) (edata : data) (fmt_str : label) =
-  ( ecode
-    (* calling convention: second argument goes into %rsi *)
-    ++ movq !%rdi !%rsi
-    (* calling convention: first argument goes into %rdi *)
-    ++ movq (ilab fmt_str) !%rdi
-    (* call to printf (with alignment) *)
-    ++ call "printf_"
-  , edata )
-;;
-
-let add_space_to_print (arg_list : expr list) : expr list =
-  let space = { expr_desc = TEconstant (Cstring " "); expr_typ = Tstring } in
-  let rec add_space (acc : expr list) (list : expr list) : expr list =
-    match list with
-    | [] -> List.rev acc
-    | t :: [] -> List.rev (t :: acc)
-    | t :: r :: q ->
-      if t.expr_typ = Tstring
-      then add_space (t :: acc) (r :: q)
-      else if r.expr_typ = Tstring
-      then add_space (r :: t :: acc) q
-      else add_space (space :: t :: acc) (r :: q)
-  in
-  add_space [] arg_list
-;;
-
 (* Print function : need to call printf for each argument with the good format *)
 let rec compile_print (depth : int) (offset : int ref) (arg_list : expr list)
   : text (* code *) * data
   =
+  (* to match go's Print behavior, we need to print a space between expressions when neither are of type string *)
+  (* we accomplish this by inserting space string literals " " at the proper place in the list of arguments given to Print *)
+  let insert_spaces_for_print (arg_list : expr list) : expr list =
+    let space = { expr_desc = TEconstant (Cstring " "); expr_typ = Tstring } in
+    let rec add_space (acc : expr list) (list : expr list) : expr list =
+      match list with
+      | [] -> List.rev acc
+      | t :: [] -> List.rev (t :: acc)
+      | t :: r :: q ->
+        if t.expr_typ = Tstring
+        then add_space (t :: acc) (r :: q)
+        else if r.expr_typ = Tstring
+        then add_space (r :: t :: acc) q
+        else add_space (space :: t :: acc) (r :: q)
+    in
+    add_space [] arg_list
+  in
   let compile_one_print (arg : expr) : text * data =
+    (* generate code for printing a simple value *)
+    let print_simple_value (ecode : text) (edata : data) (fmt_str : label) =
+      ( ecode
+        (* calling convention: second argument goes into %rsi *)
+        ++ movq !%rdi !%rsi
+        (* calling convention: first argument goes into %rdi *)
+        ++ movq (ilab fmt_str) !%rdi
+        (* call to printf (with alignment) *)
+        ++ call "printf_"
+      , edata )
+    in
     (* compile argument. after ecode, the argument value will be in %rdi *)
     let ecode, edata = compile_expr (depth + 1) offset arg in
     match arg.expr_typ with
@@ -134,7 +135,7 @@ let rec compile_print (depth : int) (offset : int ref) (arg_list : expr list)
     ~start_code:(comment (String.make depth '-' ^ "[begin] call to fmt.Print"))
     ~finish_code:(comment (String.make depth '-' ^ "[end] call to fmt.Print"))
     compile_one_print
-    (add_space_to_print arg_list)
+    (insert_spaces_for_print arg_list)
 
 and compile_binop
       (depth : int)
@@ -236,19 +237,19 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
   | TEident var -> movq (ind ~ofs:var.v_ofs rbp) !%rdi, inline ""
   | TEdot (expr, field) -> failwith "dot wip"
   | TEassign (vars, values) ->
-    (* store value expressions into the variable's offset *)
+    (* store value expressions on the stack at the variable's offset *)
     let assignments =
       match values with
       | [ { expr_desc = TEcall (id, arg); _ } ] -> failwith "function assign wip"
       | values ->
         List.map2
           (fun var value ->
-             (* compute assignment expression and stored it in the variable offset on the stack *)
-             let value_assembly = compile_expr (depth + 1) offset value in
+             (* compute assignment expression and store it on the stack at the variable's offset  *)
+             let compiled_expr = compile_expr (depth + 1) offset value in
              match var.expr_desc with
              | TEident var ->
                let code = movq !%rdi (ind ~ofs:var.v_ofs rbp) in
-               concat_code_data Fun.id [ value_assembly; code, inline "" ]
+               concat_code_data Fun.id [ compiled_expr; code, inline "" ]
              | _ -> failwith "struct assign wip")
           vars
           values
@@ -264,12 +265,13 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
       assignments
   | TEvars vars ->
     (* store each variable's offset and decrement stack pointer *)
+    let vars_count = List.length vars in
     vars
     |> List.iter (fun var ->
       offset := !offset - 8;
       var.v_ofs <- !offset);
     ( comment " increment stack pointer to store variables"
-      ++ subq (imm (8 * List.length vars)) !%rsp
+      ++ subq (imm (8 * vars_count)) !%rsp
     , inline "" )
   | TEif (b, e1, e2) ->
     let compiled_condition = compile_expr (depth + 1) offset b in
@@ -339,13 +341,13 @@ let file ?debug:(b = false) (dl : Tast.tfile) : X86_64.program =
       globl "main"
       ++ code
       (* TODO assembly code for the Go functions here *)
-      ++ inline "\n# TODO some auxiliary assembly functions, if needed\n"
+      ++ comment "TODO some auxiliary assembly functions, if needed"
       ++ aligned_call_wrapper ~f:"malloc" ~newf:"malloc_"
       ++ aligned_call_wrapper ~f:"calloc" ~newf:"calloc_"
       ++ aligned_call_wrapper ~f:"printf" ~newf:"printf_"
   ; data =
-      (* TODO static data here, such as string constants *)
-      inline "\n# global data for all code\n"
+      (* static data here, such as string constants *)
+      comment "global data for all code"
       ++ label lbl_true
       ++ string "true"
       ++ label lbl_false
