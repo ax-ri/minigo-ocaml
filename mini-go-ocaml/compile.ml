@@ -239,13 +239,13 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
       match value with
       | { expr_desc = TEcall (id, arg); _ } -> failwith "function assign wip"
       | values ->
-        (* compute assignment expression and store it on the stack at the variable's offset  *)
-        let compiled_expr = compile_expr (depth + 1) offset value in
         (match var.expr_desc with
          | TEident v ->
-           let code = movq !%rdi (ind ~ofs:v.v_ofs rbp) in
-           concat_code_data Fun.id [ compiled_expr; code, inline "" ]
-         | _ -> failwith "struct assign wip")
+           (* compute assignment expression and store it on the stack at the variable's offset  *)
+           let ecode, edata = compile_expr (depth + 1) offset value in
+           ecode ++ movq !%rdi (ind ~ofs:v.v_ofs rbp), edata
+         | TEdot _ -> failwith "struct field assign wip"
+         | _ -> failwith "unreachable")
     in
     concat_code_data
       ~start_code:
@@ -296,7 +296,19 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
   | TEblock el -> concat_code_data (compile_expr (depth + 1) offset) el
   | TEfor (b, e) -> failwith "for wip"
   | TEprint args -> compile_print (depth + 1) offset args
-  | TEincdec (e, incdec) -> failwith "incdec wip"
+  (* note: incdec is a statement, not an expression *)
+  | TEincdec (e, incdec) ->
+    let incdec =
+      match incdec with
+      | Inc -> addq (imm 1) !%rdi
+      | Dec -> subq (imm 1) !%rdi
+    in
+    (match e.expr_desc with
+     | TEident v ->
+       let ecode, edata = compile_expr (depth + 1) offset e in
+       ecode ++ incdec ++ movq !%rdi (ind ~ofs:v.v_ofs rbp), edata
+     | TEdot _ -> failwith "struct incdec wip"
+     | _ -> failwith "unreachable")
 ;;
 
 let compile_func tfunc tbody : text (* code *) * data =
