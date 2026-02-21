@@ -16,6 +16,10 @@ let new_label =
     "L_" ^ string_of_int !r
 ;;
 
+let depth_comment (depth : int) (c : string) : [> ] asm =
+  comment (String.make depth '-' ^ c)
+;;
+
 let rec expr_description (e : expr) : string =
   let name, ofs =
     match e.expr_desc with
@@ -137,8 +141,8 @@ let rec compile_print (depth : int) (offset : int ref) (arg_list : expr list)
     | Tmany _ -> failwith "print tmany wip"
   in
   concat_code_data
-    ~start_code:(comment (String.make depth '-' ^ "[begin] call to fmt.Print"))
-    ~finish_code:(comment (String.make depth '-' ^ "[end] call to fmt.Print"))
+    ~start_code:(depth_comment depth "[begin] call to fmt.Print")
+    ~finish_code:(depth_comment depth "[end] call to fmt.Print")
     compile_one_print
     (insert_spaces_for_print arg_list)
 
@@ -191,8 +195,8 @@ and compile_binop
   in
   (* concatenate code of both expressions and of operation *)
   concat_code_data
-    ~start_code:(comment (String.make depth '-' ^ "[begin] binary operation " ^ op_name))
-    ~finish_code:(comment (String.make depth '-' ^ "[end] binary operation " ^ op_name))
+    ~start_code:(depth_comment depth ("[begin] binary operation " ^ op_name))
+    ~finish_code:(depth_comment depth ("[end] binary operation " ^ op_name))
     Fun.id
     [ (* compiled code of first expression, will store result in %rdi *)
       compile_expr (depth + 1) offset expr1
@@ -217,8 +221,8 @@ and compile_unop (depth : int) (offset : int ref) (unop : unop) (expr : expr)
     | Uamp -> failwith "unreachable (unop &)"
   in
   concat_code_data
-    ~start_code:(comment (String.make depth '-' ^ "[begin] unary operation " ^ op_name))
-    ~finish_code:(comment (String.make depth '-' ^ "[end] unary operation " ^ op_name))
+    ~start_code:(depth_comment depth ("[begin] unary operation " ^ op_name))
+    ~finish_code:(depth_comment depth ("[end] unary operation " ^ op_name))
     Fun.id
     [ compile_expr (depth + 1) offset expr; op_code, inline "" ]
 
@@ -242,10 +246,11 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
   | TEnil -> xorq !%rdi !%rdi, inline ""
   | TEnew typ ->
     let typ_size = sizeof_typ typ in
-    ( comment (String.make depth '-' ^ "(TEnew)")
+    ( depth_comment depth "[begin] new"
       ++ movq (imm typ_size) !%rdi
       ++ call "malloc_"
       ++ movq !%rax !%rdi
+      ++ depth_comment depth "[end] new"
     , inline "" )
   | TEcall (f, args) -> failwith "call wip"
   | TEident var -> movq (ind ~ofs:var.v_ofs rbp) !%rdi, inline ""
@@ -260,34 +265,31 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
         (match var.expr_desc with
          | TEident v ->
            (* compute assignment expression and store it on the stack at the variable's offset  *)
-           ( value_ecode
-             ++ comment (String.make depth '-' ^ "ident assign")
+           ( depth_comment depth "[begin] ident assign"
+             ++ value_ecode
              ++ movq !%rdi (ind ~ofs:v.v_ofs rbp)
+             ++ depth_comment depth "[end] ident assign"
            , value_edata )
          | TEdot _ -> failwith "struct field assign wip"
          | TEunop (Ustar, e) ->
            let ecode, edata = compile_expr (depth + 1) offset e in
-           ( (* compute assignment expression and save it on the stack *)
-             value_ecode
+           ( depth_comment depth "[begin] star assign"
+             (* compute assignment expression and save it on the stack *)
+             ++ value_ecode
              ++ pushq !%rdi
              (* compute the address (star operand) into rdi *)
              ++ ecode
-             (* restore the assignment value to r8 and move it to the memory location contained in rdi *)
-             ++ comment (String.make depth '-' ^ "star assign")
+                (* restore the assignment value to r8 and move it to the memory location contained in rdi *)
              ++ popq r8
              ++ movq !%r8 (ind rdi)
+             ++ depth_comment depth "[end] star assign"
            , value_edata ++ edata )
          | _ -> failwith "unreachable (TEassign)")
     in
-    concat_code_data
-      ~start_code:
-        (comment
-           (String.make depth '-'
-            ^ "[begin] variable assignment for"
-            ^ expr_description var))
-      ~finish_code:(comment (String.make depth '-' ^ "[end] variables assignment"))
-      Fun.id
-      [ ecode, edata ]
+    ( depth_comment depth ("[begin] variable assignment for" ^ expr_description var)
+      ++ ecode
+      ++ depth_comment depth "[end] variables assignment"
+    , edata )
   (* multiple assignment are rewritten into single ones *)
   | TEassign (_, _) -> failwith "unreachable (multiple TEassign)"
   | TEvars vars ->
@@ -297,7 +299,7 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
     |> List.iter (fun var ->
       offset := !offset - 8;
       var.v_ofs <- !offset);
-    ( comment " increment stack pointer to store variables"
+    ( depth_comment depth " decrement stack pointer to store variables"
       ++ subq (imm (8 * vars_count)) !%rsp
     , inline "" )
   | TEif (b, e1, e2) ->
@@ -307,8 +309,8 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
     let ecode_if, edata_if = compile_expr (depth + 1) offset e1
     and ecode_else, edata_else = compile_expr (depth + 1) offset e2 in
     concat_code_data
-      ~start_code:(comment (String.make depth '-' ^ "[begin] if statement"))
-      ~finish_code:(comment (String.make depth '-' ^ "[end] if statement"))
+      ~start_code:(depth_comment depth "[begin] if statement")
+      ~finish_code:(depth_comment depth "[end] if statement")
       Fun.id
       [ compiled_condition
       ; ( (* compare condition result (in %rdi) with 0 *)
@@ -345,7 +347,7 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
 
 let compile_func tfunc tbody : text (* code *) * data =
   let offset = ref 0 in
-  let body_code, body_data = compile_expr 0 offset tbody in
+  let body_code, body_data = compile_expr (-2) offset tbody in
   let code =
     label tfunc.fn_name
     ++ pushq !%rbp
