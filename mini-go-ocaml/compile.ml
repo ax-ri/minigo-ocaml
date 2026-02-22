@@ -94,26 +94,26 @@ let rec compile_print (depth : int) (offset : int ref) (arg_list : expr list)
     (* generate code for printing a simple value *)
     let print_simple_value (ecode : text) (edata : data) (fmt_str : label) =
       ( ecode
-        (* calling convention: second argument goes into %rsi *)
+        (* calling convention: second argument goes into rsi *)
         ++ movq !%rdi !%rsi
-        (* calling convention: first argument goes into %rdi *)
+        (* calling convention: first argument goes into rdi *)
         ++ movq (ilab fmt_str) !%rdi
         (* call to printf (with alignment) *)
         ++ call "printf_"
       , edata )
     in
-    (* compile argument. after ecode, the argument value will be in %rdi *)
+    (* compile argument. after ecode, the argument value will be in rdi *)
     let ecode, edata = compile_expr (depth + 1) offset arg in
     match arg.expr_typ with
     | Tbool ->
       ( ecode
-        (* put the label for string "true" in %rax and the label for string "false" in %rbx *)
+        (* put the label for string "true" in rax and the label for string "false" in rbx *)
         ++ movq (ilab lbl_true) !%rax
         ++ movq (ilab lbl_false) !%rbx
         (* compare the boolean value with 0 (false) *)
         ++ cmpq (imm 0) !%rdi
-        (* based on the comparison, move either %rax or %rbx in %rdi *)
-        (* this way, the first argument of printf (%rdi) is either the label for string "true" or the label for string "false" *)
+        (* based on the comparison, move either rax or rbx in rdi *)
+        (* this way, the first argument of printf (rdi) is either the label for string "true" or the label for string "false" *)
         (* according to the value of the boolean *)
         ++ cmovne !%rax !%rdi
         ++ cmove !%rbx !%rdi
@@ -124,12 +124,12 @@ let rec compile_print (depth : int) (offset : int ref) (arg_list : expr list)
     | Tstring -> print_simple_value ecode edata lbl_string
     | Tptr _ ->
       ( ecode
-        (* put the label for string "<nil>" in %rax and the label for string "%p" (pointer) in %rbx *)
+        (* put the label for string "<nil>" in rax and the label for string "%p" (pointer) in rbx *)
         ++ movq (ilab lbl_nil) !%rax
         ++ movq (ilab lbl_ptr) !%rbx
         (* compare the pointer value with 0 (nil) *)
         ++ cmpq (imm 0) !%rdi
-        (* the first argument of printf (%rdi) is either the label for string "<nil>" or the format string "%p" for a pointer according to the value of the boolean *)
+        (* the first argument of printf (rdi) is either the label for string "<nil>" or the format string "%p" for a pointer according to the value of the boolean *)
         ++ cmove !%rax !%rdi
         ++ cmovne !%rdi !%rsi
         ++ cmovne !%rbx !%rdi
@@ -155,15 +155,15 @@ and compile_binop
   : text * data
   =
   (* specific code for each operation, at the beginning 
-      - resulting value of expression 1 is in %r8
-      - resulting value of expression 2 is in %rdi
+      - resulting value of expression 1 is in r8
+      - resulting value of expression 2 is in rdi
   *)
   let op_name, op_code =
     match binop with
     | Badd -> "+", addq !%r8 !%rdi
     | Bsub ->
       ( "-"
-      , (* need to invert registers to store the result in %rdi *)
+      , (* need to invert registers to store the result in rdi *)
         subq !%rdi !%r8 ++ movq !%r8 !%rdi )
     | Bmul -> "*", imulq !%r8 !%rdi
     | Bdiv ->
@@ -198,15 +198,15 @@ and compile_binop
     ~start_code:(depth_comment depth ("[begin] binary operation " ^ op_name))
     ~finish_code:(depth_comment depth ("[end] binary operation " ^ op_name))
     Fun.id
-    [ (* compiled code of first expression, will store result in %rdi *)
+    [ (* compiled code of first expression, will store result in rdi *)
       compile_expr (depth + 1) offset expr1
     ; (* need to push result on the stack to save result of first expression (otherwise overwritten by next expression) *)
       pushq !%rdi, inline ""
-    ; (* compiled code of second expression, will store result in %rdi *)
+    ; (* compiled code of second expression, will store result in rdi *)
       compile_expr (depth + 1) offset expr2
-    ; (* restore the result of first expression in %r8 *)
+    ; (* restore the result of first expression in r8 *)
       popq r8, inline ""
-    ; (* now, %r8 contains the result of first expression, and %rdi the result of the second => we can use the binary operation code *)
+    ; (* now, r8 contains the result of first expression, and rdi the result of the second => we can use the binary operation code *)
       op_code, inline ""
     ]
 
@@ -232,7 +232,7 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
   | TEskip -> nop, inline ""
   | TEconstant c ->
     (match c with
-     (* if the expression has non-nil type, its value is stored in %rdi *)
+     (* if the expression has non-nil type, its value is stored in rdi *)
      | Cbool b -> movq (imm (if b then 1 else 0)) !%rdi, inline ""
      | Cint i -> movq (imm64 i) !%rdi, inline ""
      | Cstring s ->
@@ -313,7 +313,7 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
       ~finish_code:(depth_comment depth "[end] if statement")
       Fun.id
       [ compiled_condition
-      ; ( (* compare condition result (in %rdi) with 0 *)
+      ; ( (* compare condition result (in rdi) with 0 *)
           cmpq (imm 0) !%rdi
           (* if false (equals 0), jump to else body *)
           ++ je lbl_else
