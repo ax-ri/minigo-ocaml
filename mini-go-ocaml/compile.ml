@@ -186,10 +186,10 @@ and compile_binop
         xorq !%rdx !%rdx ++ movq !%r8 !%rax ++ idivq !%rdi ++ movq !%rdx !%rdi )
     | Beq -> "=", cmpq !%r8 !%rdi ++ sete !%dil
     | Bne -> "!=", cmpq !%r8 !%rdi ++ setne !%dil
-    | Blt -> "<", cmpq !%r8 !%rdi ++ setl !%dil
-    | Ble -> "<=", cmpq !%r8 !%rdi ++ setle !%dil
-    | Bgt -> ">", cmpq !%r8 !%rdi ++ setg !%dil
-    | Bge -> ">=", cmpq !%r8 !%rdi ++ setge !%dil
+    | Blt -> "<", cmpq !%rdi !%r8 ++ setl !%dil
+    | Ble -> "<=", cmpq !%rdi !%r8 ++ setle !%dil
+    | Bgt -> ">", cmpq !%rdi !%r8 ++ setg !%dil
+    | Bge -> ">=", cmpq !%rdi !%r8 ++ setge !%dil
     | Band -> "&&", andq !%rdi !%r8 ++ setnz !%dil
     | Bor -> "||", orq !%rdi !%r8 ++ setnz !%dil
   in
@@ -306,8 +306,8 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
     let compiled_condition = compile_expr (depth + 1) offset b in
     let lbl_end_if = new_label ()
     and lbl_else = new_label () in
-    let ecode_if, edata_if = compile_expr (depth + 1) offset e1
-    and ecode_else, edata_else = compile_expr (depth + 1) offset e2 in
+    let ecode_if, edata_if = compile_expr (depth + 1) offset e1 in
+    let ecode_else, edata_else = compile_expr (depth + 1) offset e2 in
     concat_code_data
       ~start_code:(depth_comment depth "[begin] if statement")
       ~finish_code:(depth_comment depth "[end] if statement")
@@ -328,7 +328,19 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
       ]
   | TEreturn el -> failwith "return wip"
   | TEblock el -> concat_code_data (compile_expr (depth + 1) offset) el
-  | TEfor (b, e) -> failwith "for wip"
+  | TEfor (c, b) ->
+    let cond_lbl = new_label ()
+    and body_lbl = new_label () in
+    let compiled_condition = compile_expr (depth + 1) offset c in
+    let compiled_body = compile_expr (depth + 1) offset b in
+    concat_code_data
+      Fun.id
+      [ jmp cond_lbl ++ label body_lbl, inline ""
+      ; compiled_body
+      ; label cond_lbl, inline ""
+      ; compiled_condition
+      ; cmpb (imm 0) !%dil ++ jnz body_lbl, inline ""
+      ]
   | TEprint args -> compile_print (depth + 1) offset args
   (* note: incdec is a statement, not an expression *)
   | TEincdec (e, incdec) ->
