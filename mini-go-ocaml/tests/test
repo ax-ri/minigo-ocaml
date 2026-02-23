@@ -78,10 +78,10 @@ for f in syntax/bad/*.go; do
     compile --parse-only $f;
     case $? in
 	"0")
-	echo -e "\e[0;31mFAILURE\e[0m on "$f" (should fail)";;
+	echo -e "\e[0;31mFAILURE\e[0m on "$f" (should fail)"; echo;;
 	"1") score=`expr $score + 1`;;
 	*)
-	echo -e "\e[0;31mFAILURE\e[0m on "$f" (for a bad reason)";;
+	echo -e "\e[0;31mFAILURE\e[0m on "$f" (for a bad reason)"; echo;;
     esac
 done
 echo
@@ -95,10 +95,10 @@ for f in syntax/good/*.go typing/bad/*.go typing/good/*.go exec/*.go exec-fail/*
     compile --parse-only $f;
     case $? in
 	"1")	
-	echo -e "\e[0;31mFAILURE\e[0m on "$f" (should succeed)";;
+	echo -e "\e[0;31mFAILURE\e[0m on "$f" (should succeed)"; echo;;
 	"0") score=`expr $score + 1`;;
 	*)
-	echo -e "\e[0;31mFAILURE\e[0m on "$f" (for a bad reason)";;
+	echo -e "\e[0;31mFAILURE\e[0m on "$f" (for a bad reason)"; echo;;
     esac
 done
 echo
@@ -125,10 +125,10 @@ for f in typing/bad/*.go; do
     compile --type-only $f;
     case $? in
 	"0")
-	echo -e "\e[0;31mFAILURE\e[0m on "$f" (should fail)";;
+	echo -e "\e[0;31mFAILURE\e[0m on "$f" (should fail)"; echo;;
 	"1") score=`expr $score + 1`;;
 	*)
-	echo -e "\e[0;31mFAILURE\e[0m on "$f" (for a bad reason)";;
+	echo -e "\e[0;31mFAILURE\e[0m on "$f" (for a bad reason)"; echo;;
     esac
 done
 echo
@@ -141,10 +141,10 @@ for f in typing/good/*.go exec/*.go exec-fail/*.go; do
     compile --type-only $f;
     case $? in
 	"1")
-	echo -e "\e[0;31mFAILURE\e[0m on "$f" (should succeed)";;
+	echo -e "\e[0;31mFAILURE\e[0m on "$f" (should succeed)"; echo;;
 	"0") score=`expr $score + 1`;;
 	*)
-	echo -e "\e[0;31mFAILURE\e[0m on "$f" (for a bad reason)";;
+	echo -e "\e[0;31mFAILURE\e[0m on "$f" (for a bad reason)"; echo;;
     esac
 done
 echo
@@ -186,17 +186,18 @@ for f in exec/*.go; do
 	    if cmp --quiet out $expected; then
 		score_test=`expr $score_test + 1`;
 	    else
-		echo
-		echo -e "\e[0;31mFAILURE\e[0m: bad output for $f"
+            echo
+            echo -e "\e[0;31mFAILURE\e[0m: bad output for $f"
 	    fi
 	else
 		echo
 		echo -e "\e[0;31mFAILURE\e[0m: of the generated code for $f"
 	fi
     else
-	echo
-	echo -e "\e[0;31mFAILURE\e[0m: the compilation on $f (should succeed)"
+        echo
+        echo -e "\e[0;31mFAILURE\e[0m: the compilation on $f (should succeed)"
     fi
+    echo
 done
 echo
 
@@ -218,9 +219,10 @@ for f in exec-fail/*.go; do
 	    score_out=`expr $score_out + 1`;
 	fi
     else
-	echo
-	echo -e "\e[0;31mFAILURE\e[0m: the compilation on $f (must succeed)"
+        echo
+        echo -e "\e[0;31mFAILURE\e[0m: of the compilation on $f (must succeed)"
     fi
+    echo
 done
 
 echo

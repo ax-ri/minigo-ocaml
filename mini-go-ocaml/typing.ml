@@ -751,7 +751,7 @@ let file ~debug:b ((imp, dl) : Ast.pfile) : Tast.tfile =
           ; (* will be populated later *)
             s_fields = Hashtbl.create 8
           ; s_list = []
-          ; s_size = 0
+          ; s_size = -1
           }
     | _ -> ());
   (**** 2 ****)

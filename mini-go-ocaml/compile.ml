@@ -54,11 +54,23 @@ let concat_code_data
   code ++ finish_code, data ++ finish_data
 ;;
 
-let sizeof_typ (typ : typ) : int =
+let rec sizeof_typ (typ : typ) : int =
   match typ with
   | Tint | Tbool | Tstring | Tptr _ -> 8
-  | Tstruct _ -> failwith "struct size wip"
+  | Tstruct s ->
+    if s.s_size = -1 then compute_struct_size_and_offsets s;
+    s.s_size
   | Tnil | Tmany _ -> failwith "unreachable (sizeof_typ)"
+
+and compute_struct_size_and_offsets (s : structure) =
+  let current_ofs = ref 0 in
+  s.s_list
+  |> List.iter (fun f ->
+    f.f_ofs <- !current_ofs;
+    let field_size = sizeof_typ f.f_typ in
+    current_ofs := !current_ofs + field_size;
+    ());
+  s.s_size <- !current_ofs
 ;;
 
 (* Create label for each format string needed *)
@@ -136,9 +148,11 @@ let rec compile_print (depth : int) (offset : int ref) (arg_list : expr list)
         (* call to printf (with alignment) *)
         ++ call "printf_"
       , edata )
-    | Tstruct _ -> failwith "fmt.Print cannot print structures yet"
+    | Tstruct s ->
+      (* structures are printed in {}, with fields split by spaces *)
+      failwith "print structures wip"
     | Tnil -> print_simple_value ecode edata lbl_nil
-    | Tmany _ -> failwith "print tmany wip"
+    | Tmany l -> failwith "unreachable (print Tmany)"
   in
   concat_code_data
     ~start_code:(depth_comment depth "[begin] call to fmt.Print")
@@ -246,7 +260,7 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
   | TEnil -> xorq !%rdi !%rdi, inline ""
   | TEnew typ ->
     let typ_size = sizeof_typ typ in
-    ( depth_comment depth "[begin] new"
+    ( depth_comment depth ("[begin] new (size " ^ string_of_int typ_size ^ ")")
       ++ movq (imm typ_size) !%rdi
       ++ call "malloc_"
       ++ movq !%rax !%rdi
@@ -383,6 +397,10 @@ let compile_func tfunc tbody : text (* code *) * data =
 
 let file ?debug:(b = false) (dl : Tast.tfile) : X86_64.program =
   debug := b;
+  dl
+  |> List.iter (function
+    | TDstruct s -> compute_struct_size_and_offsets s
+    | TDfunction _ -> ());
   let code, data =
     concat_code_data
       (function
