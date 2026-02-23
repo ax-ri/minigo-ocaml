@@ -82,9 +82,7 @@ and lbl_string = new_label ()
 and lbl_ptr = new_label ()
 
 (* Print function : need to call printf for each argument with the good format *)
-let rec compile_print (depth : int) (offset : int ref) (arg_list : expr list)
-  : text (* code *) * data
-  =
+let rec compile_print (depth : int) (arg_list : expr list) : text (* code *) * data =
   (* to match go's Print behavior, we need to print a space between expressions when neither are of type string *)
   (* we accomplish this by inserting space string literals " " at the proper place in the list of arguments given to Print *)
   let insert_spaces_for_print (arg_list : expr list) : expr list =
@@ -115,7 +113,7 @@ let rec compile_print (depth : int) (offset : int ref) (arg_list : expr list)
       , edata )
     in
     (* compile argument. after ecode, the argument value will be in rdi *)
-    let ecode, edata = compile_expr (depth + 1) offset arg in
+    let ecode, edata = compile_expr (depth + 1) arg in
     match arg.expr_typ with
     | Tbool ->
       ( ecode
@@ -160,12 +158,7 @@ let rec compile_print (depth : int) (offset : int ref) (arg_list : expr list)
     compile_one_print
     (insert_spaces_for_print arg_list)
 
-and compile_binop
-      (depth : int)
-      (offset : int ref)
-      (binop : binop)
-      (expr1 : expr)
-      (expr2 : expr)
+and compile_binop (depth : int) (binop : binop) (expr1 : expr) (expr2 : expr)
   : text * data
   =
   (* specific code for each operation, at the beginning 
@@ -213,20 +206,18 @@ and compile_binop
     ~finish_code:(depth_comment depth ("[end] binary operation " ^ op_name))
     Fun.id
     [ (* compiled code of first expression, will store result in rdi *)
-      compile_expr (depth + 1) offset expr1
+      compile_expr (depth + 1) expr1
     ; (* need to push result on the stack to save result of first expression (otherwise overwritten by next expression) *)
       pushq !%rdi, inline ""
     ; (* compiled code of second expression, will store result in rdi *)
-      compile_expr (depth + 1) offset expr2
+      compile_expr (depth + 1) expr2
     ; (* restore the result of first expression in r8 *)
       popq r8, inline ""
     ; (* now, r8 contains the result of first expression, and rdi the result of the second => we can use the binary operation code *)
       op_code, inline ""
     ]
 
-and compile_unop (depth : int) (offset : int ref) (unop : unop) (expr : expr)
-  : text * data
-  =
+and compile_unop (depth : int) (unop : unop) (expr : expr) : text * data =
   let op_name, op_code =
     match unop with
     | Uneg -> "-", negq !%rdi
@@ -238,12 +229,12 @@ and compile_unop (depth : int) (offset : int ref) (unop : unop) (expr : expr)
     ~start_code:(depth_comment depth ("[begin] unary operation " ^ op_name))
     ~finish_code:(depth_comment depth ("[end] unary operation " ^ op_name))
     Fun.id
-    [ compile_expr (depth + 1) offset expr; op_code, inline "" ]
+    [ compile_expr (depth + 1) expr; op_code, inline "" ]
 
 (* Generate code for each expressions *)
-and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *) * data =
+and compile_expr (depth : int) (expr : expr) : text (* code *) * data =
   match expr.expr_desc with
-  | TEskip -> nop, inline ""
+  | TEskip -> nop, nop
   | TEconstant c ->
     (match c with
      (* if the expression has non-nil type, its value is stored in rdi *)
@@ -252,11 +243,11 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
      | Cstring s ->
        let lbl = new_label () in
        movq (ilab lbl) !%rdi, label lbl ++ string s)
-  | TEbinop (binop, expr1, expr2) -> compile_binop (depth + 1) offset binop expr1 expr2
+  | TEbinop (binop, expr1, expr2) -> compile_binop (depth + 1) binop expr1 expr2
   (* thanks to rewriting, the only case of '&' is before a '*' => directly compile the operand expression *)
   (* (because &( *p ) <=> p ) *)
-  | TEunop (Uamp, { expr_desc = TEunop (Ustar, e); _ }) -> compile_expr depth offset e
-  | TEunop (unop, expr) -> compile_unop (depth + 1) offset unop expr
+  | TEunop (Uamp, { expr_desc = TEunop (Ustar, e); _ }) -> compile_expr depth e
+  | TEunop (unop, expr) -> compile_unop (depth + 1) unop expr
   | TEnil -> xorq !%rdi !%rdi, inline ""
   | TEnew typ ->
     let typ_size = sizeof_typ typ in
@@ -275,7 +266,7 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
       match value with
       | { expr_desc = TEcall (id, arg); _ } -> failwith "function assign wip"
       | value ->
-        let value_ecode, value_edata = compile_expr (depth + 1) offset value in
+        let value_ecode, value_edata = compile_expr (depth + 1) value in
         (match var.expr_desc with
          | TEident v ->
            (* compute assignment expression and store it on the stack at the variable's offset  *)
@@ -286,7 +277,7 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
            , value_edata )
          | TEdot _ -> failwith "struct field assign wip"
          | TEunop (Ustar, e) ->
-           let ecode, edata = compile_expr (depth + 1) offset e in
+           let ecode, edata = compile_expr (depth + 1) e in
            ( depth_comment depth "[begin] star assign"
              (* compute assignment expression and save it on the stack *)
              ++ value_ecode
@@ -306,22 +297,14 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
     , edata )
   (* multiple assignment are rewritten into single ones *)
   | TEassign (_, _) -> failwith "unreachable (multiple TEassign)"
-  | TEvars vars ->
-    (* store each variable's offset and decrement stack pointer *)
-    let vars_count = List.length vars in
-    vars
-    |> List.iter (fun var ->
-      offset := !offset - 8;
-      var.v_ofs <- !offset);
-    ( depth_comment depth " decrement stack pointer to store variables"
-      ++ subq (imm (8 * vars_count)) !%rsp
-    , inline "" )
+  (* all variables declarations are grouped at the top of the function *)
+  | TEvars vars -> nop, nop
   | TEif (b, e1, e2) ->
-    let compiled_condition = compile_expr (depth + 1) offset b in
+    let compiled_condition = compile_expr (depth + 1) b in
     let lbl_end_if = new_label ()
     and lbl_else = new_label () in
-    let ecode_if, edata_if = compile_expr (depth + 1) offset e1 in
-    let ecode_else, edata_else = compile_expr (depth + 1) offset e2 in
+    let ecode_if, edata_if = compile_expr (depth + 1) e1 in
+    let ecode_else, edata_else = compile_expr (depth + 1) e2 in
     concat_code_data
       ~start_code:(depth_comment depth "[begin] if statement")
       ~finish_code:(depth_comment depth "[end] if statement")
@@ -341,12 +324,12 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
         , edata_if ++ edata_else )
       ]
   | TEreturn el -> failwith "return wip"
-  | TEblock el -> concat_code_data (compile_expr (depth + 1) offset) el
+  | TEblock el -> concat_code_data (compile_expr (depth + 1)) el
   | TEfor (c, b) ->
     let cond_lbl = new_label ()
     and body_lbl = new_label () in
-    let compiled_condition = compile_expr (depth + 1) offset c in
-    let compiled_body = compile_expr (depth + 1) offset b in
+    let compiled_condition = compile_expr (depth + 1) c in
+    let compiled_body = compile_expr (depth + 1) b in
     concat_code_data
       Fun.id
       [ jmp cond_lbl ++ label body_lbl, inline ""
@@ -355,7 +338,7 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
       ; compiled_condition
       ; cmpb (imm 0) !%dil ++ jnz body_lbl, inline ""
       ]
-  | TEprint args -> compile_print (depth + 1) offset args
+  | TEprint args -> compile_print (depth + 1) args
   (* note: incdec is a statement, not an expression *)
   | TEincdec (e, incdec) ->
     let incdec =
@@ -365,23 +348,65 @@ and compile_expr (depth : int) (offset : int ref) (expr : expr) : text (* code *
     in
     (match e.expr_desc with
      | TEident v ->
-       let ecode, edata = compile_expr (depth + 1) offset e in
+       let ecode, edata = compile_expr (depth + 1) e in
        ecode ++ incdec ++ movq !%rdi (ind ~ofs:v.v_ofs rbp), edata
      | TEdot _ -> failwith "struct incdec wip"
      | _ -> failwith "unreachable (TEincdec)")
 ;;
 
-let compile_func tfunc tbody : text (* code *) * data =
+let find_all_vars (tbody : expr) : var list =
+  let rec aux (acc : var list) (e : expr) : var list =
+    match e.expr_desc with
+    | TEskip
+    | TEconstant _
+    | TEbinop _
+    | TEunop _
+    | TEnil
+    | TEnew _
+    | TEcall _
+    | TEident _
+    | TEdot _
+    | TEassign _
+    | TEprint _
+    | TEincdec _
+    | TEreturn _ -> acc
+    | TEvars v_list -> acc @ v_list
+    | TEif (_, b1, b2) -> aux (aux acc b1 @ acc) b2
+    | TEblock b -> b |> List.fold_left aux acc
+    | TEfor (_, b) -> aux acc b
+  in
+  aux [] tbody
+;;
+
+let compile_func (tfunc : function_) (tbody : expr) : text (* code *) * data =
+  (* for each variable declared somewhere in the function body, we compute its offset (from rbp) based on its size.
+     we also compute the total size of all variables (sum of all variables size) to know how much stack frame we need to allocate. *)
+  let total_var_size =
   let offset = ref 0 in
-  let body_code, body_data = compile_expr (-2) offset tbody in
+    find_all_vars tbody
+    |> List.iter (fun var ->
+      let size = sizeof_typ var.v_typ in
+      offset := !offset - size;
+      var.v_ofs <- !offset);
+    (* offset starts at 0 and is subtracted the size of each variable, so the total variable size is just its opposite *)
+    - !offset
+  in
+  let body_code, body_data = compile_expr (-2) tbody in
   let code =
     label tfunc.fn_name
+    (* prepare stack frame *)
     ++ pushq !%rbp
     ++ movq !%rsp !%rbp
-    (* add generated code to the function call *)
+    (* allocate space for variables *)
+    ++ comment "decrement stack pointer to store function variables"
+    ++ subq (imm total_var_size) !%rsp
+    (* function body code *)
+    ++ comment ("code for body of function " ^ tfunc.fn_name)
     ++ body_code
+    (* restore stack frame *)
     ++ movq !%rbp !%rsp
     ++ popq rbp
+    (* set return code for main *)
     ++ (if tfunc.fn_name = "main"
         then comment "main must return 0" ++ xorq !%rax !%rax
         else comment "")
