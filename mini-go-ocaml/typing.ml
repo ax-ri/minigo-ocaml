@@ -11,15 +11,13 @@ exception Error of Ast.location * string
 
 (** use this function to report errors; it is a printf-like function, eg.
 
-    errorm ~loc "bad arity %d for function %s" n f
-
-*)
+    errorm ~loc "bad arity %d for function %s" n f *)
 let errorm ?(loc = dummy_loc) f =
   Format.kasprintf (fun s -> raise (Error (loc, s))) ("@[" ^^ f ^^ "@]")
 ;;
 
-(** use this function to create variable, so that they all have a
-    unique id if field `v_id` *)
+(** use this function to create variable, so that they all have a unique id if
+    field `v_id` *)
 let new_var : string -> Ast.location -> typ -> var =
   let id = ref 0 in
   fun x loc ty ->
@@ -499,21 +497,22 @@ let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
      | _ -> errorm ~loc:pexpr.pexpr_loc "accessing a field of a non-struct type")
   (**** statements ****)
   | PEassign (left_pexpr, right_pexpr) ->
-    let left_expr = left_pexpr |> List.map (expr_left_value tenv)
-    and right_expr_and_types : (expr * typ) list =
+    let left_expr = left_pexpr |> List.map (expr_left_value tenv) in
+    let (right_expr, right_types) : expr list * typ list =
       match right_pexpr with
       | [ ({ pexpr_desc = PEcall (id, arg); _ } as pecall) ] ->
         let f = expr tenv pecall in
-        TypeHelpers.map_typ_to_typ_list (fun x -> f, x) f.expr_typ
+        [ f ], TypeHelpers.map_typ_to_typ_list (fun x -> x) f.expr_typ
       | _ ->
         right_pexpr
         |> List.map (fun pe ->
           let te = expr tenv pe in
           te, te.expr_typ)
+        |> List.split
     in
     (try
        List.iter2
-         (fun { expr_typ = t1; _ } (_, t2) ->
+         (fun { expr_typ = t1; _ } t2 ->
             if not (TypeHelpers.are_typ_equals t1 t2)
             then
               errorm
@@ -524,12 +523,12 @@ let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
                 Pretty.typ
                 t1)
          left_expr
-         right_expr_and_types
+         right_types
      with
      | Invalid_argument _ ->
        errorm ~loc:pexpr.pexpr_loc "to few or to many values to assign to variables");
-    { expr_desc = TEassign (left_expr, right_expr_and_types |> List.map fst)
-    ; expr_typ = TypeHelpers.typ_of_typ_list (right_expr_and_types |> List.map snd)
+    { expr_desc = TEassign (left_expr, right_expr)
+    ; expr_typ = TypeHelpers.typ_of_typ_list right_types
     }
   | PEvars (ident_list, ptyp_opt, pexpr_list) ->
     let var_types : typ list =

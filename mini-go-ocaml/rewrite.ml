@@ -187,7 +187,7 @@ and many rw f el =
   | [ { expr_desc = TEcall (g, el') } ] when many_results g ->
     (* f(g(...)) =>
         var v1,...,vn,w1,...,wk; g(...&w1,...,&wk); f(w1,..,wk, &v1,...,&vn) *)
-    let vl', e' = many rw f el' in
+    let vl', e' = many rw g el' in
     ( vl
     , stmt
         (TEblock [ stmt (TEvars vl'); e'; stmt (TEcall (f, List.map ident vl' @ fargs)) ])
