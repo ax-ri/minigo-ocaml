@@ -217,22 +217,8 @@ and compile_binop (depth : int) (binop : binop) (expr1 : expr) (expr2 : expr)
       op_code, inline ""
     ]
 
-and compile_unop (depth : int) (unop : unop) (expr : expr) : text * data =
-  let op_name, op_code =
-    match unop with
-    | Uneg -> "-", negq !%rdi
-    | Unot -> "!", notb !%dil ++ andb (imm 1) !%dil
-    | Ustar -> "*", movq (ind rdi) !%rdi
-    | Uamp -> failwith "unreachable (unop &)"
-  in
-  concat_code_data
-    ~start_code:(depth_comment depth ("[begin] unary operation " ^ op_name))
-    ~finish_code:(depth_comment depth ("[end] unary operation " ^ op_name))
-    Fun.id
-    [ compile_expr (depth + 1) expr; op_code, inline "" ]
-
 (* Generate code for each expressions *)
-and compile_expr (depth : int) (expr : expr) : text (* code *) * data =
+and compile_expr (depth : int) (expr : expr) : text * data =
   match expr.expr_desc with
   | TEskip -> nop, nop
   | TEconstant c ->
@@ -244,10 +230,16 @@ and compile_expr (depth : int) (expr : expr) : text (* code *) * data =
        let lbl = new_label () in
        movq (ilab lbl) !%rdi, label lbl ++ string s)
   | TEbinop (binop, expr1, expr2) -> compile_binop (depth + 1) binop expr1 expr2
-  (* thanks to rewriting, the only case of '&' is before a '*' => directly compile the operand expression *)
-  (* (because &( *p ) <=> p ) *)
-  | TEunop (Uamp, { expr_desc = TEunop (Ustar, e); _ }) -> compile_expr depth e
-  | TEunop (unop, expr) -> compile_unop (depth + 1) unop expr
+  | TEunop (Uneg, expr) ->
+    let e_code, e_data = compile_expr (depth + 1) expr in
+    e_code ++ negq !%rdi, e_data
+  | TEunop (Unot, expr) ->
+    let e_code, e_data = compile_expr (depth + 1) expr in
+    e_code ++ notb !%dil ++ andb (imm 1) !%dil, e_data
+  | TEunop (Ustar, _) ->
+    let e_code, e_data = compile_left_value depth expr in
+    e_code ++ movq (ind rdi) !%rdi, e_data
+  | TEunop (Uamp, e) -> compile_left_value depth e
   | TEnil -> xorq !%rdi !%rdi, inline ""
   | TEnew typ ->
     let typ_size = sizeof_typ typ in
@@ -260,43 +252,22 @@ and compile_expr (depth : int) (expr : expr) : text (* code *) * data =
   | TEcall (f, args) -> failwith "call wip"
   | TEident var -> movq (ind ~ofs:var.v_ofs rbp) !%rdi, inline ""
   | TEdot (expr, field) -> failwith "dot wip"
-  | TEassign ([ var ], [ value ]) ->
+  | TEassign ([ left_expr ], [ value ]) ->
     (* store value expressions on the stack at the variable's offset *)
-    let ecode, edata =
-      match value with
-      | { expr_desc = TEcall (id, arg); _ } -> failwith "function assign wip"
-      | value ->
-        let value_ecode, value_edata = compile_expr (depth + 1) value in
-        (match var.expr_desc with
-         | TEident v ->
-           (* compute assignment expression and store it on the stack at the variable's offset  *)
-           ( depth_comment depth "[begin] ident assign"
-             ++ value_ecode
-             ++ movq !%rdi (ind ~ofs:v.v_ofs rbp)
-             ++ depth_comment depth "[end] ident assign"
-           , value_edata )
-         | TEdot _ -> failwith "struct field assign wip"
-         | TEunop (Ustar, e) ->
-           let ecode, edata = compile_expr (depth + 1) e in
-           ( depth_comment depth "[begin] star assign"
-             (* compute assignment expression and save it on the stack *)
-             ++ value_ecode
+    let lv_code, lv_data = compile_left_value (depth + 1) left_expr in
+    let value_code, value_data = compile_expr (depth + 1) value in
+    ( depth_comment depth ("[begin] variable assignment for" ^ expr_description left_expr)
+      ++ value_code
+      (* store value result (rdi) on the stack *)
              ++ pushq !%rdi
-             (* compute the address (star operand) into rdi *)
-             ++ ecode
-                (* restore the assignment value to r8 and move it to the memory location contained in rdi *)
+      ++ lv_code
+      (* recover value result in register r8*)
              ++ popq r8
              ++ movq !%r8 (ind rdi)
-             ++ depth_comment depth "[end] star assign"
-           , value_edata ++ edata )
-         | _ -> failwith "unreachable (TEassign)")
-    in
-    ( depth_comment depth ("[begin] variable assignment for" ^ expr_description var)
-      ++ ecode
       ++ depth_comment depth "[end] variables assignment"
-    , edata )
+    , value_data ++ lv_data )
   (* multiple assignment are rewritten into single ones *)
-  | TEassign (_, _) -> failwith "unreachable (multiple TEassign)"
+  | TEassign _ -> failwith "unreachable (multiple TEassign)"
   (* all variables declarations are grouped at the top of the function *)
   | TEvars vars -> nop, nop
   | TEif (b, e1, e2) ->
@@ -343,15 +314,25 @@ and compile_expr (depth : int) (expr : expr) : text (* code *) * data =
   | TEincdec (e, incdec) ->
     let incdec =
       match incdec with
-      | Inc -> addq (imm 1) !%rdi
-      | Dec -> subq (imm 1) !%rdi
+      | Inc -> incq
+      | Dec -> decq
     in
-    (match e.expr_desc with
-     | TEident v ->
-       let ecode, edata = compile_expr (depth + 1) e in
-       ecode ++ incdec ++ movq !%rdi (ind ~ofs:v.v_ofs rbp), edata
-     | TEdot _ -> failwith "struct incdec wip"
-     | _ -> failwith "unreachable (TEincdec)")
+    let lv_code, lv_data = compile_left_value (depth + 1) e in
+    lv_code ++ incdec (ind rdi), lv_data
+
+and compile_left_value (depth : int) (expr : expr) : text * data =
+  (* put the address of the left value in rdi *)
+  match expr.expr_desc with
+  (* | TEident ({ v_typ = Tptr _; _ } as v) -> movq (ind ~ofs:v.v_ofs rbp) !%rdi, nop *)
+  | TEident v -> movq !%rbp !%rdi ++ addq (imm v.v_ofs) !%rdi, nop
+  | TEunop (Ustar, ({ expr_typ = Tptr _ } as e)) ->
+    (* return the address referenced by the pointer ie its value *)
+    (* put the value of expression e in rdi (which is the wanted address, because the expression is a pointer) *)
+    compile_expr (depth + 1) e
+  (* star can only be used on pointers *)
+  | TEunop (Ustar, _) -> failwith "unreachable (compile_left_value - star on non-pointer)"
+  | TEdot _ -> failwith "struct left_value dot wip"
+  | _ -> failwith "unreachable (compile_left_value)"
 ;;
 
 let find_all_vars (tbody : expr) : var list =
@@ -422,15 +403,7 @@ let compile_func (tfunc : function_) (tbody : expr) : text (* code *) * data =
 
 let file ?debug:(b = false) (dl : Tast.tfile) : X86_64.program =
   debug := b;
-  dl
-  |> List.iter (function
-    | TDstruct s -> compute_struct_size_and_offsets s
-    | TDfunction _ -> ());
   let code, data =
-    concat_code_data
-      (function
-        | TDfunction (tfunc, tbody) -> compile_func tfunc tbody
-        | _ -> nop, nop)
       dl
   in
   { text =
