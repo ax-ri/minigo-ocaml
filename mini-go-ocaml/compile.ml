@@ -352,7 +352,7 @@ let find_all_vars (tbody : expr) : var list =
     | TEincdec _
     | TEreturn _ -> acc
     | TEvars v_list -> acc @ v_list
-    | TEif (_, b1, b2) -> aux (aux acc b1 @ acc) b2
+    | TEif (_, b1, b2) -> [ b1; b2 ] |> List.fold_left aux acc
     | TEblock b -> b |> List.fold_left aux acc
     | TEfor (_, b) -> aux acc b
   in
@@ -366,8 +366,7 @@ let compile_func (tfunc : function_) (tbody : expr) : text (* code *) * data =
   let offset = ref 0 in
     find_all_vars tbody
     |> List.iter (fun var ->
-      let size = sizeof_typ var.v_typ in
-      offset := !offset - size;
+      offset := !offset - sizeof_typ var.v_typ;
       var.v_ofs <- !offset);
     (* offset starts at 0 and is subtracted the size of each variable, so the total variable size is just its opposite *)
     - !offset
@@ -405,6 +404,11 @@ let file ?debug:(b = false) (dl : Tast.tfile) : X86_64.program =
   debug := b;
   let code, data =
       dl
+    |> concat_code_data (function
+      | TDstruct s ->
+        compute_struct_size_and_offsets s;
+        nop, nop
+      | TDfunction (tfunc, tbody) -> compile_func tfunc tbody)
   in
   { text =
       globl "main"
