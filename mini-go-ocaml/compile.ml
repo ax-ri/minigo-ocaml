@@ -181,7 +181,7 @@ and compile_binop (depth : int) (binop : binop) (expr1 : expr) (expr2 : expr)
             - quotient: rax <- result
             - remainder: rdx
         *)
-        xorq !%rdx !%rdx ++ movq !%r8 !%rax ++ idivq !%rdi ++ movq !%rax !%rdi )
+        movq !%r8 !%rax ++ cqto ++ idivq !%rdi ++ movq !%rax !%rdi )
     | Bmod ->
       ( "%"
       , (* integer signed division 
@@ -190,15 +190,15 @@ and compile_binop (depth : int) (binop : binop) (expr1 : expr) (expr2 : expr)
             - quotient: rax
             - remainder: rdx <- result
         *)
-        xorq !%rdx !%rdx ++ movq !%r8 !%rax ++ idivq !%rdi ++ movq !%rdx !%rdi )
-    | Beq -> "=", cmpq !%r8 !%rdi ++ sete !%dil
-    | Bne -> "!=", cmpq !%r8 !%rdi ++ setne !%dil
-    | Blt -> "<", cmpq !%rdi !%r8 ++ setl !%dil
-    | Ble -> "<=", cmpq !%rdi !%r8 ++ setle !%dil
-    | Bgt -> ">", cmpq !%rdi !%r8 ++ setg !%dil
-    | Bge -> ">=", cmpq !%rdi !%r8 ++ setge !%dil
-    | Band -> "&&", andq !%rdi !%r8 ++ setnz !%dil
-    | Bor -> "||", orq !%rdi !%r8 ++ setnz !%dil
+        movq !%r8 !%rax ++ cqto ++ idivq !%rdi ++ movq !%rdx !%rdi )
+    | Beq -> "=", cmpq !%r8 !%rdi ++ sete !%dil ++ andq (imm 1) !%rdi
+    | Bne -> "!=", cmpq !%r8 !%rdi ++ setne !%dil ++ andq (imm 1) !%rdi
+    | Blt -> "<", cmpq !%rdi !%r8 ++ setl !%dil ++ andq (imm 1) !%rdi
+    | Ble -> "<=", cmpq !%rdi !%r8 ++ setle !%dil ++ andq (imm 1) !%rdi
+    | Bgt -> ">", cmpq !%rdi !%r8 ++ setg !%dil ++ andq (imm 1) !%rdi
+    | Bge -> ">=", cmpq !%rdi !%r8 ++ setge !%dil ++ andq (imm 1) !%rdi
+    | Band -> "&&", andq !%rdi !%r8 ++ setnz !%dil ++ andq (imm 1) !%rdi
+    | Bor -> "||", orq !%rdi !%r8 ++ setnz !%dil ++ andq (imm 1) !%rdi
   in
   (* concatenate code of both expressions and of operation *)
   concat_code_data
