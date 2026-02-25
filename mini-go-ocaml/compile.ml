@@ -249,7 +249,27 @@ and compile_expr (depth : int) (expr : expr) : text * data =
       ++ movq !%rax !%rdi
       ++ depth_comment depth "[end] new"
     , inline "" )
-  | TEcall (f, args) -> failwith "call wip"
+  | TEcall (f, args) ->
+    (* push each parameters on the stack (in reverse order: n, n-1, ..., 2, 1) and then call the function *)
+    (* for now, caller-saver registers are not saved and restored -> no use of them *)
+    let args_code, args_data =
+      args
+      |> List.rev
+      |> concat_code_data
+           (fun arg ->
+              let compiled_arg_code, compiled_arg_data = compile_expr (depth + 1) arg in
+              compiled_arg_code ++ pushq !%rdi, compiled_arg_data)
+           ~start_code:(depth_comment depth ("[begin] call of function " ^ f.fn_name))
+    in
+    ( args_code
+      ++ call f.fn_name
+      (* pop the stack with the right size to remove all the function call arguments at once *)
+      ++ (let pop_size =
+            args |> List.fold_left (fun acc a -> acc + sizeof_typ a.expr_typ) 0
+          in
+          addq (imm pop_size) !%rsp)
+      ++ depth_comment depth ("[end] call of function " ^ f.fn_name)
+    , args_data )
   | TEident var -> movq (ind ~ofs:var.v_ofs rbp) !%rdi, inline ""
   | TEdot (expr, field) -> failwith "dot wip"
   | TEassign ([ left_expr ], [ value ]) ->
@@ -259,11 +279,11 @@ and compile_expr (depth : int) (expr : expr) : text * data =
     ( depth_comment depth ("[begin] variable assignment for" ^ expr_description left_expr)
       ++ value_code
       (* store value result (rdi) on the stack *)
-             ++ pushq !%rdi
+      ++ pushq !%rdi
       ++ lv_code
       (* recover value result in register r8*)
-             ++ popq r8
-             ++ movq !%r8 (ind rdi)
+      ++ popq r8
+      ++ movq !%r8 (ind rdi)
       ++ depth_comment depth "[end] variables assignment"
     , value_data ++ lv_data )
   (* multiple assignment are rewritten into single ones *)
@@ -294,7 +314,22 @@ and compile_expr (depth : int) (expr : expr) : text * data =
           ++ label lbl_end_if
         , edata_if ++ edata_else )
       ]
-  | TEreturn el -> failwith "return wip"
+  | TEreturn l ->
+    let e_code, e_data =
+      match l with
+      | [] -> nop, nop
+      | [ e ] -> compile_expr (depth + 1) e
+      | _ -> failwith "unreachable (TEreturn)"
+    in
+    ( (* compute return value *)
+      e_code
+      ++
+      (* restore stack frame *)
+      movq !%rbp !%rsp
+      ++ popq rbp
+      (* return from function *)
+      ++ ret
+    , e_data )
   | TEblock el -> concat_code_data (compile_expr (depth + 1)) el
   | TEfor (c, b) ->
     let cond_lbl = new_label ()
@@ -363,7 +398,7 @@ let compile_func (tfunc : function_) (tbody : expr) : text (* code *) * data =
   (* for each variable declared somewhere in the function body, we compute its offset (from rbp) based on its size.
      we also compute the total size of all variables (sum of all variables size) to know how much stack frame we need to allocate. *)
   let total_var_size =
-  let offset = ref 0 in
+    let offset = ref 0 in
     find_all_vars tbody
     |> List.iter (fun var ->
       offset := !offset - sizeof_typ var.v_typ;
@@ -371,7 +406,17 @@ let compile_func (tfunc : function_) (tbody : expr) : text (* code *) * data =
     (* offset starts at 0 and is subtracted the size of each variable, so the total variable size is just its opposite *)
     - !offset
   in
-  let body_code, body_data = compile_expr (-2) tbody in
+  (* compute the offset of each parameter *)
+  let _ =
+    let offset = ref 8 in
+    tfunc.fn_params
+    |> List.iter (fun v ->
+      offset := !offset + sizeof_typ v.v_typ;
+      v.v_ofs <- !offset)
+  in
+  ();
+  (* compile function body *)
+  let body_code, body_data = compile_expr 0 tbody in
   let code =
     label tfunc.fn_name
     (* prepare stack frame *)
@@ -382,14 +427,14 @@ let compile_func (tfunc : function_) (tbody : expr) : text (* code *) * data =
     ++ subq (imm total_var_size) !%rsp
     (* function body code *)
     ++ comment ("code for body of function " ^ tfunc.fn_name)
-    ++ body_code
-    (* restore stack frame *)
+    ++ body_code (* *)
     ++ movq !%rbp !%rsp
     ++ popq rbp
+    ++
     (* set return code for main *)
-    ++ (if tfunc.fn_name = "main"
-        then comment "main must return 0" ++ xorq !%rax !%rax
-        else comment "")
+    (if tfunc.fn_name = "main"
+     then comment "main must return 0" ++ xorq !%rax !%rax
+     else nop)
     ++ ret
   in
   ( comment ("[begin] code of function " ^ tfunc.fn_name)
@@ -403,7 +448,7 @@ let compile_func (tfunc : function_) (tbody : expr) : text (* code *) * data =
 let file ?debug:(b = false) (dl : Tast.tfile) : X86_64.program =
   debug := b;
   let code, data =
-      dl
+    dl
     |> concat_code_data (function
       | TDstruct s ->
         compute_struct_size_and_offsets s;
