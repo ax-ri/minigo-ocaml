@@ -102,21 +102,21 @@ let rec compile_print (depth : int) (arg_list : expr list) : text (* code *) * d
   in
   let compile_one_print (arg : expr) : text * data =
     (* generate code for printing a simple value *)
-    let print_simple_value (ecode : text) (edata : data) (fmt_str : label) =
-      ( ecode
+    let print_simple_value (e_code : text) (e_data : data) (fmt_str : label) =
+      ( e_code
         (* calling convention: second argument goes into rsi *)
         ++ movq !%rdi !%rsi
         (* calling convention: first argument goes into rdi *)
         ++ movq (ilab fmt_str) !%rdi
         (* call to printf (with alignment) *)
         ++ call "printf_"
-      , edata )
+      , e_data )
     in
-    (* compile argument. after ecode, the argument value will be in rdi *)
-    let ecode, edata = compile_expr (depth + 1) arg in
+    (* compile argument. after e_code, the argument value will be in rdi *)
+    let e_code, e_data = compile_expr (depth + 1) arg in
     match arg.expr_typ with
     | Tbool ->
-      ( ecode
+      ( e_code
         (* put the label for string "true" in rax and the label for string "false" in rbx *)
         ++ movq (ilab lbl_true) !%rax
         ++ movq (ilab lbl_false) !%rbx
@@ -129,11 +129,11 @@ let rec compile_print (depth : int) (arg_list : expr list) : text (* code *) * d
         ++ cmove !%rbx !%rdi
         (* call to printf (with alignment) *)
         ++ call "printf_"
-      , edata )
-    | Tint -> print_simple_value ecode edata lbl_int
-    | Tstring -> print_simple_value ecode edata lbl_string
+      , e_data )
+    | Tint -> print_simple_value e_code e_data lbl_int
+    | Tstring -> print_simple_value e_code e_data lbl_string
     | Tptr _ ->
-      ( ecode
+      ( e_code
         (* put the label for string "<nil>" in rax and the label for string "%p" (pointer) in rbx *)
         ++ movq (ilab lbl_nil) !%rax
         ++ movq (ilab lbl_ptr) !%rbx
@@ -145,11 +145,11 @@ let rec compile_print (depth : int) (arg_list : expr list) : text (* code *) * d
         ++ cmovne !%rbx !%rdi
         (* call to printf (with alignment) *)
         ++ call "printf_"
-      , edata )
+      , e_data )
     | Tstruct s ->
       (* structures are printed in {}, with fields split by spaces *)
       failwith "print structures wip"
-    | Tnil -> print_simple_value ecode edata lbl_nil
+    | Tnil -> print_simple_value e_code e_data lbl_nil
     | Tmany l -> failwith "unreachable (print Tmany)"
   in
   concat_code_data
@@ -208,13 +208,13 @@ and compile_binop (depth : int) (binop : binop) (expr1 : expr) (expr2 : expr)
     [ (* compiled code of first expression, will store result in rdi *)
       compile_expr (depth + 1) expr1
     ; (* need to push result on the stack to save result of first expression (otherwise overwritten by next expression) *)
-      pushq !%rdi, inline ""
+      pushq !%rdi, nop
     ; (* compiled code of second expression, will store result in rdi *)
       compile_expr (depth + 1) expr2
     ; (* restore the result of first expression in r8 *)
-      popq r8, inline ""
+      popq r8, nop
     ; (* now, r8 contains the result of first expression, and rdi the result of the second => we can use the binary operation code *)
-      op_code, inline ""
+      op_code, nop
     ]
 
 (* Generate code for each expressions *)
@@ -224,8 +224,8 @@ and compile_expr (depth : int) (expr : expr) : text * data =
   | TEconstant c ->
     (match c with
      (* if the expression has non-nil type, its value is stored in rdi *)
-     | Cbool b -> movq (imm (if b then 1 else 0)) !%rdi, inline ""
-     | Cint i -> movq (imm64 i) !%rdi, inline ""
+     | Cbool b -> movq (imm (if b then 1 else 0)) !%rdi, nop
+     | Cint i -> movq (imm64 i) !%rdi, nop
      | Cstring s ->
        let lbl = new_label () in
        movq (ilab lbl) !%rdi, label lbl ++ string s)
@@ -240,7 +240,7 @@ and compile_expr (depth : int) (expr : expr) : text * data =
     let e_code, e_data = compile_left_value depth expr in
     e_code ++ movq (ind rdi) !%rdi, e_data
   | TEunop (Uamp, e) -> compile_left_value depth e
-  | TEnil -> xorq !%rdi !%rdi, inline ""
+  | TEnil -> xorq !%rdi !%rdi, nop
   | TEnew typ ->
     let typ_size = sizeof_typ typ in
     ( depth_comment depth ("[begin] new (size " ^ string_of_int typ_size ^ ")")
@@ -248,7 +248,7 @@ and compile_expr (depth : int) (expr : expr) : text * data =
       ++ call "malloc_"
       ++ movq !%rax !%rdi
       ++ depth_comment depth "[end] new"
-    , inline "" )
+    , nop )
   | TEcall (f, args) ->
     (* push each parameters on the stack (in reverse order: n, n-1, ..., 2, 1) and then call the function *)
     (* for now, caller-saver registers are not saved and restored -> no use of them *)
@@ -270,7 +270,7 @@ and compile_expr (depth : int) (expr : expr) : text * data =
           addq (imm pop_size) !%rsp)
       ++ depth_comment depth ("[end] call of function " ^ f.fn_name)
     , args_data )
-  | TEident var -> movq (ind ~ofs:var.v_ofs rbp) !%rdi, inline ""
+  | TEident var -> movq (ind ~ofs:var.v_ofs rbp) !%rdi, nop
   | TEdot (expr, field) -> failwith "dot wip"
   | TEassign ([ left_expr ], [ value ]) ->
     (* store value expressions on the stack at the variable's offset *)
@@ -294,8 +294,8 @@ and compile_expr (depth : int) (expr : expr) : text * data =
     let compiled_condition = compile_expr (depth + 1) b in
     let lbl_end_if = new_label ()
     and lbl_else = new_label () in
-    let ecode_if, edata_if = compile_expr (depth + 1) e1 in
-    let ecode_else, edata_else = compile_expr (depth + 1) e2 in
+    let e_code_if, e_data_if = compile_expr (depth + 1) e1 in
+    let e_code_else, e_data_else = compile_expr (depth + 1) e2 in
     concat_code_data
       ~start_code:(depth_comment depth "[begin] if statement")
       ~finish_code:(depth_comment depth "[end] if statement")
@@ -306,13 +306,13 @@ and compile_expr (depth : int) (expr : expr) : text * data =
           (* if false (equals 0), jump to else body *)
           ++ je lbl_else
           (* otherwise, run the if body, and jump to the end of the if statement *)
-          ++ ecode_if
+          ++ e_code_if
           ++ jmp lbl_end_if
           (* else body *)
           ++ label lbl_else
-          ++ ecode_else
+          ++ e_code_else
           ++ label lbl_end_if
-        , edata_if ++ edata_else )
+        , e_data_if ++ e_data_else )
       ]
   | TEreturn l ->
     let e_code, e_data =
@@ -338,11 +338,11 @@ and compile_expr (depth : int) (expr : expr) : text * data =
     let compiled_body = compile_expr (depth + 1) b in
     concat_code_data
       Fun.id
-      [ jmp cond_lbl ++ label body_lbl, inline ""
+      [ jmp cond_lbl ++ label body_lbl, nop
       ; compiled_body
-      ; label cond_lbl, inline ""
+      ; label cond_lbl, nop
       ; compiled_condition
-      ; cmpb (imm 0) !%dil ++ jnz body_lbl, inline ""
+      ; cmpb (imm 0) !%dil ++ jnz body_lbl, nop
       ]
   | TEprint args -> compile_print (depth + 1) args
   (* note: incdec is a statement, not an expression *)
