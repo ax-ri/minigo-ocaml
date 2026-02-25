@@ -56,11 +56,11 @@ let concat_code_data
 
 let rec sizeof_typ (typ : typ) : int =
   match typ with
-  | Tint | Tbool | Tstring | Tptr _ -> 8
+  | Tint | Tbool | Tstring | Tptr _ | Tnil -> 8
   | Tstruct s ->
     if s.s_size = -1 then compute_struct_size_and_offsets s;
     s.s_size
-  | Tnil | Tmany _ -> failwith "unreachable (sizeof_typ)"
+  | Tmany _ -> failwith "unreachable (sizeof_typ)"
 
 and compute_struct_size_and_offsets (s : structure) =
   let current_ofs = ref 0 in
