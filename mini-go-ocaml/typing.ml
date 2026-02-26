@@ -407,28 +407,22 @@ let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
        { expr_desc = TEunop (unop, te); expr_typ = Tptr te.expr_typ }
      | Ustar -> expr_left_value tenv pexpr)
   | PEnil -> { expr_desc = TEnil; expr_typ = Tnil }
+  (* function call fmt.Print *)
+  | PEcall (({ id = "fmt.Print"; _ } as id), pel) ->
+    if not tenv.import_fmt
+    then errorm ~loc:id.loc "import of module 'fmt' is required to use 'fmt.Print'";
+    tenv.fmt_used <- true;
+    { expr_desc = TEprint (pel |> List.map (expr tenv)); expr_typ = Tmany [] }
+  (* function call new (for structure) *)
+  | PEcall ({ id = "new"; _ }, [ e ]) ->
+    let te = expr tenv e in
+    (match te.expr_typ with
+     | Tstruct _ -> { expr_desc = TEnew te.expr_typ; expr_typ = Tptr te.expr_typ }
+     | _ -> errorm ~loc:pexpr.pexpr_loc "cannot call 'new' on a non-structure type")
+  | PEcall ({ id = "new"; _ }, _) ->
+    errorm ~loc:pexpr.pexpr_loc "cannot call 'new' with multiple arguments"
   | PEcall (id, pel) ->
     (match Hashtbl.find_opt tenv.functions id.id with
-     (* function call fmt.Print *)
-     | None when id.id = "fmt.Print" ->
-       if not tenv.import_fmt
-       then errorm ~loc:id.loc "import of module 'fmt' is required to use 'fmt.Print'";
-       tenv.fmt_used <- true;
-       { expr_desc = TEprint (pel |> List.map (expr tenv)); expr_typ = Tmany [] }
-     (* function call new (for structure) *)
-     | None when id.id = "new" ->
-       (match pel with
-        | [ e ] ->
-          let te = expr tenv e in
-          (match te.expr_typ with
-           | Tstruct s ->
-             let structure = Hashtbl.find_opt tenv.structures s.s_name in
-             (match structure with
-              | None -> errorm ~loc:pexpr.pexpr_loc "structure '%s' not found" s.s_name
-              | Some str ->
-                { expr_desc = TEnew (Tptr te.expr_typ); expr_typ = Tptr te.expr_typ })
-           | _ -> errorm ~loc:pexpr.pexpr_loc "cannot call 'new' on a non-structure type")
-        | _ -> errorm ~loc:pexpr.pexpr_loc "cannot call 'new' to multiple arguments")
      (* function is used but never declared *)
      | None -> errorm ~loc:pexpr.pexpr_loc "function '%s' not found" id.id
      (* function has been declared *)
