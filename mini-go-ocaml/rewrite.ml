@@ -152,7 +152,9 @@ let rec expr rw e =
       , v )
     in
     let code, tmpl = map_fold_left temp [] el in
-    let assign code lv tmp = make (TEassign ([ lv ], [ ident tmp ])) tvoid :: code in
+    let assign code lv tmp =
+      make (TEassign ([ expr rw lv ], [ ident tmp ])) tvoid :: code
+    in
     let code = List.fold_left2 assign code lvl tmpl in
     mk (TEblock (List.rev code))
   | TEif (e1, e2, e3) -> mk (TEif (expr rw e1, expr rw e2, expr rw e3))
