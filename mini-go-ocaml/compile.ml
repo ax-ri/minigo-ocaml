@@ -1,4 +1,4 @@
-(** Code generation for Mini Go programs (TODO) *)
+(** Code generation for Mini Go programs *)
 
 open Format
 open Ast
@@ -6,8 +6,6 @@ open Tast
 open X86_64
 
 let debug = ref false
-let iter f = List.fold_left (fun code x -> code ++ f x) nop
-let iter2 f = List.fold_left2 (fun code x y -> code ++ f x y) nop
 
 let new_label =
   let r = ref 0 in
@@ -16,19 +14,9 @@ let new_label =
     "L_" ^ string_of_int !r
 ;;
 
+(* create a comment in asm code with a marker of the depth *)
 let depth_comment (depth : int) (c : string) : [> ] asm =
   comment (String.make depth '-' ^ c)
-;;
-
-let rec expr_description (e : expr) : string =
-  let name, ofs =
-    match e.expr_desc with
-    | TEident v -> v.v_name, string_of_int v.v_ofs
-    | TEunop (Ustar, e) -> "*(" ^ expr_description e ^ ")", ""
-    | TEdot (e, f) -> "field: " ^ f.f_name, string_of_int f.f_ofs ^ " (field)"
-    | _ -> "other", "ofs"
-  in
-  " '" ^ name ^ "' (ofs=" ^ ofs ^ ")"
 ;;
 
 (* Iterate a list with a function to produce a tuple (code, data) and concatenate together the resulting codes and data.
@@ -55,6 +43,7 @@ let concat_code_data
   code ++ finish_code, data ++ finish_data
 ;;
 
+(* get the size of a given type, in bytes. may trigger the computation of structure size (at most one time) *)
 let rec sizeof_typ (typ : typ) : int =
   match typ with
   | Tint | Tbool | Tstring | Tptr _ | Tnil -> 8
@@ -63,6 +52,7 @@ let rec sizeof_typ (typ : typ) : int =
     s.s_size
   | Tmany _ -> failwith "unreachable (sizeof_typ)"
 
+(* compute the total size of a structure (in bytes) as well as the offsets of each field *)
 and compute_struct_size_and_offsets (s : structure) =
   let current_ofs = ref 0 in
   s.s_list
@@ -74,7 +64,7 @@ and compute_struct_size_and_offsets (s : structure) =
   s.s_size <- !current_ofs
 ;;
 
-(* Create label for each format string needed *)
+(* Create label for each recurring format string *)
 let lbl_true = new_label ()
 and lbl_false = new_label ()
 and lbl_nil = new_label ()
@@ -192,6 +182,7 @@ and compile_binop (depth : int) (binop : binop) (expr1 : expr) (expr2 : expr)
             - remainder: rdx <- result
         *)
         movq !%r8 !%rax ++ cqto ++ idivq !%rdi ++ movq !%rdx !%rdi )
+    (* for boolean operations, we need to and the result with 1 to ensure that rdi is set to exactly 0 or 1 (and not another non-zero value) *)
     | Beq -> "=", cmpq !%r8 !%rdi ++ sete !%dil ++ andq (imm 1) !%rdi
     | Bne -> "!=", cmpq !%r8 !%rdi ++ setne !%dil ++ andq (imm 1) !%rdi
     | Blt -> "<", cmpq !%rdi !%r8 ++ setl !%dil ++ andq (imm 1) !%rdi
@@ -218,18 +209,16 @@ and compile_binop (depth : int) (binop : binop) (expr1 : expr) (expr2 : expr)
       op_code, nop
     ]
 
-(* Generate code for each expressions *)
+(* generate code for each expressions *)
 and compile_expr (depth : int) (expr : expr) : text * data =
   match expr.expr_desc with
-  | TEskip -> nop, nop
-  | TEconstant c ->
-    (match c with
-     (* if the expression has non-nil type, its value is stored in rdi *)
-     | Cbool b -> movq (imm (if b then 1 else 0)) !%rdi, nop
-     | Cint i -> movq (imm64 i) !%rdi, nop
-     | Cstring s ->
-       let lbl = new_label () in
-       movq (ilab lbl) !%rdi, label lbl ++ string s)
+  (**** expressions ****)
+  (* expression code will leave the result of the expression in rdi *)
+  | TEconstant (Cbool b) -> movq (imm (if b then 1 else 0)) !%rdi, nop
+  | TEconstant (Cint i) -> movq (imm64 i) !%rdi, nop
+  | TEconstant (Cstring s) ->
+    let lbl = new_label () in
+    movq (ilab lbl) !%rdi, label lbl ++ string s
   | TEbinop (binop, expr1, expr2) -> compile_binop (depth + 1) binop expr1 expr2
   | TEunop (Uneg, expr) ->
     let e_code, e_data = compile_expr (depth + 1) expr in
@@ -244,15 +233,21 @@ and compile_expr (depth : int) (expr : expr) : text * data =
   | TEnil -> xorq !%rdi !%rdi, nop
   | TEnew typ ->
     let typ_size = sizeof_typ typ in
-    ( depth_comment depth ("[begin] new (size " ^ string_of_int typ_size ^ ")")
+    ( depth_comment depth "[begin] new heap allocation"
       ++ movq (imm typ_size) !%rdi
       ++ call "malloc_"
       ++ movq !%rax !%rdi
-      ++ depth_comment depth "[end] new"
+      ++ depth_comment depth "[end] new heap allocation"
     , nop )
+  | TEident var -> movq (ind ~ofs:var.v_ofs rbp) !%rdi, nop
+  | TEdot _ ->
+    let e_code, e_data = compile_left_value (depth + 1) expr in
+    e_code ++ movq (ind rdi) !%rdi, e_data
+  (**** statements ****)
+  | TEskip -> nop, nop
   | TEcall (f, args) ->
     (* push each parameters on the stack (in reverse order: n, n-1, ..., 2, 1) and then call the function *)
-    (* for now, caller-saver registers are not saved and restored -> no use of them *)
+    (* for now, caller-saver registers are not used of them -> no save and restore  *)
     let args_code, args_data =
       args
       |> List.rev
@@ -271,15 +266,13 @@ and compile_expr (depth : int) (expr : expr) : text * data =
           addq (imm pop_size) !%rsp)
       ++ depth_comment depth ("[end] call of function " ^ f.fn_name)
     , args_data )
-  | TEident var -> movq (ind ~ofs:var.v_ofs rbp) !%rdi, nop
-  | TEdot _ ->
-    let e_code, e_data = compile_left_value (depth + 1) expr in
-    e_code ++ movq (ind rdi) !%rdi, e_data
   | TEassign ([ left_expr ], [ value ]) ->
     (* store value expressions on the stack at the variable's offset *)
     let lv_code, lv_data = compile_left_value (depth + 1) left_expr in
     let value_code, value_data = compile_expr (depth + 1) value in
-    ( depth_comment depth ("[begin] variable assignment for" ^ expr_description left_expr)
+    ( depth_comment
+        depth
+        (Format.asprintf "[begin] variable assignment for '%a'" Pretty.expr left_expr)
       ++ comment "value code"
       ++ value_code
       (* store value result (rdi) on the stack *)
@@ -294,7 +287,7 @@ and compile_expr (depth : int) (expr : expr) : text * data =
   (* multiple assignment are rewritten into single ones *)
   | TEassign _ -> failwith "unreachable (multiple TEassign)"
   (* all variables declarations are grouped at the top of the function *)
-  | TEvars vars -> nop, nop
+  | TEvars _ -> nop, nop
   | TEif (b, e1, e2) ->
     let compiled_condition = compile_expr (depth + 1) b in
     let lbl_end_if = new_label ()
@@ -361,15 +354,18 @@ and compile_expr (depth : int) (expr : expr) : text * data =
     lv_code ++ incdec (ind rdi), lv_data
 
 and compile_left_value (depth : int) (expr : expr) : text * data =
-  (* put the address of the left value in rdi *)
+  (* when executed, the generated code will leave the address of the left value in rdi *)
   match expr.expr_desc with
+  (* since all the variables are stack-allocated, the adress of a variable is rbp + the variable offset *)
   | TEident v -> movq !%rbp !%rdi ++ addq (imm v.v_ofs) !%rdi, nop
-  | TEunop (Ustar, ({ expr_typ = Tptr _; _ } as e)) ->
-    (* return the address referenced by the pointer ie its value *)
-    (* put the value of expression e in rdi (which is the wanted address, because the expression is a pointer) *)
-    compile_expr (depth + 1) e
+  (* the address of *e is just the value of e (because e is a pointer) *)
+  (* so we just need to get the value of e *)
+  (* this way, we return the address referenced by the pointer (i.e. its value) *)
+  | TEunop (Ustar, ({ expr_typ = Tptr _; _ } as e)) -> compile_expr (depth + 1) e
   (* star can only be used on pointers *)
   | TEunop (Ustar, _) -> failwith "unreachable (compile_left_value - star on non-pointer)"
+  (* to get the address of e.f, we first need the address of e, and then we add the offset of the field f *)
+  (* if e is a pointer, then we must also follow it *)
   | TEdot (e, f) ->
     let e_code, e_data = compile_left_value (depth + 1) e in
     ( e_code
@@ -382,6 +378,7 @@ and compile_left_value (depth : int) (expr : expr) : text * data =
   | _ -> failwith "unreachable (compile_left_value)"
 ;;
 
+(* find all the variables declared in a block (typically, the body of a function) *)
 let find_all_vars (tbody : expr) : var list =
   let rec aux (acc : var list) (e : expr) : var list =
     match e.expr_desc with
@@ -470,8 +467,7 @@ let file ?debug:(b = false) (dl : Tast.tfile) : X86_64.program =
   { text =
       globl "main"
       ++ code
-      (* TODO assembly code for the Go functions here *)
-      ++ comment "TODO some auxiliary assembly functions, if needed"
+      ++ comment "some auxiliary assembly functions"
       ++ aligned_call_wrapper ~f:"malloc" ~newf:"malloc_"
       ++ aligned_call_wrapper ~f:"calloc" ~newf:"calloc_"
       ++ aligned_call_wrapper ~f:"printf" ~newf:"printf_"

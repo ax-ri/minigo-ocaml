@@ -177,7 +177,7 @@ module Helpers = struct
     aux block
   ;;
 
-  (* check that all the branches in a block have a return statement *)
+  (* tell whether all branches in a block have a return statement *)
   let rec check_all_branches_reach_return (e : expr) : bool =
     match e.expr_desc with
     | TEreturn _ -> true
@@ -192,7 +192,6 @@ module Helpers = struct
 
   (* for a given struct, tell whether all the types of its fields have a valid type (no recursive reference to the same struct)  *)
   let check_struct_fields_types (s : structure) : unit =
-    let struct_name = s.s_name in
     let rec check_fields (s : structure) : unit =
       s.s_list |> List.iter (fun field -> check_typ field.f_typ)
     and check_typ (typ : typ) : unit =
@@ -200,15 +199,15 @@ module Helpers = struct
       | Tint | Tbool | Tstring | Tptr _ | Tnil -> ()
       | Tmany l -> l |> List.iter check_typ
       | Tstruct s' ->
-        if s'.s_name = struct_name
-        then errorm "structure '%s' uses itself recursively without pointer" struct_name
+        if s'.s_name = s.s_name
+        then errorm "structure '%s' uses itself recursively without pointer" s.s_name
         else check_fields s'
     in
     check_fields s
   ;;
 end
 
-(* some rewriting on the base ast, performed before typing *)
+(* Some rewriting on the base ast, performed before typing *)
 module PreRewrite : sig
   val expand_vars_initialization : TypeEnv.t -> pexpr list -> pexpr list
 end = struct
@@ -275,8 +274,7 @@ end = struct
       ( ident_pexpr_list
       , List.init (List.length ident_pexpr_list) (fun _ ->
           default_type_value pexpr_loc tau) )
-    (* a primitive (non-struct) type is given, with some init values => do nothing as everything is already provided *)
-    | Some tau, pexpr_list -> ident_pexpr_list, pexpr_list
+    (* no type provided and no init values => invalid *)
     | None, [] ->
       errorm
         ~loc:pexpr_loc
@@ -312,8 +310,6 @@ end = struct
       in
       ident_pexpr_list |> List.concat, init_values |> List.concat
   ;;
-
-  (* ident_pexpr_list, pexpr_list *)
 
   (* given a list of expressions (typically from a block), will scan for variables declaration and insert variables assignation immediately after,
      in order to ensure that all declared variables are properly initialized (either with the provided expressions, or with the default value based on the type).
@@ -373,110 +369,106 @@ end
 let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
   match pexpr.pexpr_desc with
   (**** expressions ****)
-  | PEskip -> { expr_desc = TEskip; expr_typ = Tnil }
-  | PEconstant c ->
-    let expr_typ =
-      match c with
-      | Cbool _ -> Tbool
-      | Cint _ -> Tint
-      | Cstring _ -> Tstring
-    in
-    { expr_desc = TEconstant c; expr_typ }
-  | PEbinop (binop, pe1, pe2) ->
-    (match binop with
-     | Badd | Bsub | Bmul | Bdiv | Bmod ->
-       let te1 = expr tenv pe1 in
-       let te2 = expr tenv pe2 in
-       if te1.expr_typ <> Tint || te2.expr_typ <> Tint
-       then
-         errorm
-           ~loc:pexpr.pexpr_loc
-           "wrong types for binary operation '%s': expected 'int', found '%a' and '%a'"
-           (Pretty.binop binop)
-           Pretty.typ
-           te1.expr_typ
-           Pretty.typ
-           te2.expr_typ;
-       { expr_desc = TEbinop (binop, te1, te2); expr_typ = Tint }
-     | Beq | Bne ->
-       let te1 = expr tenv pe1 in
-       let te2 = expr tenv pe2 in
-       if not (TypeHelpers.are_typ_equals te1.expr_typ te2.expr_typ)
-       then
-         errorm
-           ~loc:pexpr.pexpr_loc
-           "wrong types for binary operation '%s': both expressions must have the same \
-            type"
-           (Pretty.binop binop);
-       if te1.expr_typ = Tnil && te2.expr_typ = Tnil
-       then
-         errorm
-           ~loc:pexpr.pexpr_loc
-           "wrong types for binary operation '%s': both types are nil"
-           (Pretty.binop binop);
-       { expr_desc = TEbinop (binop, te1, te2); expr_typ = Tbool }
-     | Blt | Ble | Bgt | Bge ->
-       let te1 = expr tenv pe1 in
-       let te2 = expr tenv pe2 in
-       if te1.expr_typ <> Tint || te2.expr_typ <> Tint
-       then
-         errorm
-           ~loc:pexpr.pexpr_loc
-           "wrong types for binary operation '%s': expected 'int', found '%a' and '%a'"
-           (Pretty.binop binop)
-           Pretty.typ
-           te1.expr_typ
-           Pretty.typ
-           te2.expr_typ;
-       { expr_desc = TEbinop (binop, te1, te2); expr_typ = Tbool }
-     | Band | Bor ->
-       let te1 = expr tenv pe1 in
-       let te2 = expr tenv pe2 in
-       if te1.expr_typ <> Tbool || te2.expr_typ <> Tbool
-       then
-         errorm
-           ~loc:pexpr.pexpr_loc
-           "wrong types for binary operation '%s': expected 'bool', found '%a' and '%a'"
-           (Pretty.binop binop)
-           Pretty.typ
-           te1.expr_typ
-           Pretty.typ
-           te2.expr_typ;
-       { expr_desc = TEbinop (binop, te1, te2); expr_typ = Tbool })
-  | PEunop (unop, pe) ->
-    (match unop with
-     | Uneg ->
-       let te = expr tenv pe in
-       if te.expr_typ <> Tint
-       then
-         errorm
-           ~loc:pexpr.pexpr_loc
-           "wrong type for unary operation '%s': expected 'int', found '%a'"
-           (Pretty.unop unop)
-           Pretty.typ
-           te.expr_typ;
-       { expr_desc = TEunop (unop, te); expr_typ = Tint }
-     | Unot ->
-       let te = expr tenv pe in
-       if te.expr_typ <> Tbool
-       then
-         errorm
-           ~loc:pexpr.pexpr_loc
-           "wrong type for unary operation '%s': expected 'bool', found '%a'"
-           (Pretty.unop unop)
-           Pretty.typ
-           te.expr_typ;
-       { expr_desc = TEunop (unop, te); expr_typ = Tbool }
-     | Uamp ->
-       let te = expr_left_value tenv pe in
-       (* if the operand is a variable v, retain the fact that &v is used *)
-       (match te.expr_desc with
-        | TEident v ->
-          v.v_addr <- true;
-          v.v_used <- true
-        | _ -> ());
-       { expr_desc = TEunop (unop, te); expr_typ = Tptr te.expr_typ }
-     | Ustar -> expr_left_value tenv pexpr)
+  | PEconstant (Cbool _ as c) -> { expr_desc = TEconstant c; expr_typ = Tbool }
+  | PEconstant (Cint _ as c) -> { expr_desc = TEconstant c; expr_typ = Tint }
+  | PEconstant (Cstring _ as c) -> { expr_desc = TEconstant c; expr_typ = Tstring }
+  | PEbinop ((Badd as binop), pe1, pe2)
+  | PEbinop ((Bsub as binop), pe1, pe2)
+  | PEbinop ((Bmul as binop), pe1, pe2)
+  | PEbinop ((Bdiv as binop), pe1, pe2)
+  | PEbinop ((Bmod as binop), pe1, pe2) ->
+    let te1 = expr tenv pe1 in
+    let te2 = expr tenv pe2 in
+    if te1.expr_typ <> Tint || te2.expr_typ <> Tint
+    then
+      errorm
+        ~loc:pexpr.pexpr_loc
+        "wrong types for binary operation '%s': expected 'int', found '%a' and '%a'"
+        (Pretty.binop binop)
+        Pretty.typ
+        te1.expr_typ
+        Pretty.typ
+        te2.expr_typ;
+    { expr_desc = TEbinop (binop, te1, te2); expr_typ = Tint }
+  | PEbinop ((Beq as binop), pe1, pe2) | PEbinop ((Bne as binop), pe1, pe2) ->
+    let te1 = expr tenv pe1 in
+    let te2 = expr tenv pe2 in
+    if not (TypeHelpers.are_typ_equals te1.expr_typ te2.expr_typ)
+    then
+      errorm
+        ~loc:pexpr.pexpr_loc
+        "wrong types for binary operation '%s': both expressions must have the same type"
+        (Pretty.binop binop);
+    if te1.expr_typ = Tnil && te2.expr_typ = Tnil
+    then
+      errorm
+        ~loc:pexpr.pexpr_loc
+        "wrong types for binary operation '%s': both types are nil"
+        (Pretty.binop binop);
+    { expr_desc = TEbinop (binop, te1, te2); expr_typ = Tbool }
+  | PEbinop ((Blt as binop), pe1, pe2)
+  | PEbinop ((Ble as binop), pe1, pe2)
+  | PEbinop ((Bgt as binop), pe1, pe2)
+  | PEbinop ((Bge as binop), pe1, pe2) ->
+    let te1 = expr tenv pe1 in
+    let te2 = expr tenv pe2 in
+    if te1.expr_typ <> Tint || te2.expr_typ <> Tint
+    then
+      errorm
+        ~loc:pexpr.pexpr_loc
+        "wrong types for binary operation '%s': expected 'int', found '%a' and '%a'"
+        (Pretty.binop binop)
+        Pretty.typ
+        te1.expr_typ
+        Pretty.typ
+        te2.expr_typ;
+    { expr_desc = TEbinop (binop, te1, te2); expr_typ = Tbool }
+  | PEbinop ((Band as binop), pe1, pe2) | PEbinop ((Bor as binop), pe1, pe2) ->
+    let te1 = expr tenv pe1 in
+    let te2 = expr tenv pe2 in
+    if te1.expr_typ <> Tbool || te2.expr_typ <> Tbool
+    then
+      errorm
+        ~loc:pexpr.pexpr_loc
+        "wrong types for binary operation '%s': expected 'bool', found '%a' and '%a'"
+        (Pretty.binop binop)
+        Pretty.typ
+        te1.expr_typ
+        Pretty.typ
+        te2.expr_typ;
+    { expr_desc = TEbinop (binop, te1, te2); expr_typ = Tbool }
+  | PEunop (Uneg, pe) ->
+    let te = expr tenv pe in
+    if te.expr_typ <> Tint
+    then
+      errorm
+        ~loc:pexpr.pexpr_loc
+        "wrong type for unary operation '%s': expected 'int', found '%a'"
+        (Pretty.unop Uneg)
+        Pretty.typ
+        te.expr_typ;
+    { expr_desc = TEunop (Uneg, te); expr_typ = Tint }
+  | PEunop (Unot, pe) ->
+    let te = expr tenv pe in
+    if te.expr_typ <> Tbool
+    then
+      errorm
+        ~loc:pexpr.pexpr_loc
+        "wrong type for unary operation '%s': expected 'bool', found '%a'"
+        (Pretty.unop Unot)
+        Pretty.typ
+        te.expr_typ;
+    { expr_desc = TEunop (Unot, te); expr_typ = Tbool }
+  | PEunop (Uamp, pe) ->
+    let te = expr_left_value tenv pe in
+    (* if the operand is a variable v, retain the fact that &v is used *)
+    (match te.expr_desc with
+     | TEident v ->
+       v.v_addr <- true;
+       v.v_used <- true
+     | _ -> ());
+    { expr_desc = TEunop (Uamp, te); expr_typ = Tptr te.expr_typ }
+  | PEunop (Ustar, _) -> expr_left_value tenv pexpr
   | PEnil -> { expr_desc = TEnil; expr_typ = Tnil }
   (* function call fmt.Print *)
   | PEcall (({ id = "fmt.Print"; _ } as id), pel) ->
@@ -536,8 +528,8 @@ let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
        { expr_desc = TEcall (f, arguments)
        ; expr_typ = TypeHelpers.typ_of_typ_list f.fn_typ
        })
+  | PEident { id = "_"; loc } -> errorm ~loc "cannot use variable '_'"
   | PEident id ->
-    if id.id = "_" then errorm ~loc:pexpr.pexpr_loc "cannot use variable '_'";
     (match Hashtbl.find_opt tenv.variables id.id with
      | Some v -> v.v_used <- true
      | None -> ());
@@ -556,6 +548,7 @@ let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
         | Some field -> { expr_desc = TEdot (te, field); expr_typ = field.f_typ })
      | _ -> errorm ~loc:pexpr.pexpr_loc "accessing a field of a non-struct type")
   (**** statements ****)
+  | PEskip -> { expr_desc = TEskip; expr_typ = Tmany [] }
   | PEassign (left_pexpr, right_pexpr) ->
     let left_expr = left_pexpr |> List.map (expr_left_value tenv) in
     let (right_expr, right_types) : expr list * typ list =
@@ -812,7 +805,7 @@ let file ~debug:b ((imp, dl) : Ast.pfile) : Tast.tfile =
           ; s_list = []
           ; s_size = -1
           }
-    | _ -> ());
+    | PDfunction _ -> ());
   (**** 2 ****)
   dl
   |> List.iter (function
@@ -906,10 +899,8 @@ let file ~debug:b ((imp, dl) : Ast.pfile) : Tast.tfile =
   *)
   (match Hashtbl.find_opt tenv.functions "main" with
    | None -> errorm "missing required 'main' function"
-   | Some f ->
-     (match f.fn_params, f.fn_typ with
-      | [], [] -> ()
-      | _ -> errorm "'main' function must have no parameter and no return type"));
+   | Some { fn_params = []; fn_typ = []; _ } -> ()
+   | _ -> errorm "'main' function must have no parameter and no return type");
   if tenv.import_fmt && not tenv.fmt_used then errorm "module 'fmt' imported but not used";
   (* build the final typed ast with the structures and functions *)
   Seq.append
