@@ -78,7 +78,8 @@ end
 (* Helpers functions to deal with types *)
 module TypeHelpers = struct
   (* check that a ptyp is well formed, in the sense of the typing rules *)
-  let rec is_ptyp_well_formed (tenv : TypeEnv.t) : ptyp -> bool = function
+  let rec is_ptyp_well_formed (tenv : TypeEnv.t) (ptyp : ptyp) : bool =
+    match ptyp with
     | PTident { id; loc } ->
       (match id with
        | "bool" | "int" | "string" -> true
@@ -86,18 +87,30 @@ module TypeHelpers = struct
     | PTptr t -> is_ptyp_well_formed tenv t
   ;;
 
+  (* convert a identifier to a type (if the identifier is the name of a type) *)
+  let typ_of_ident (tenv : TypeEnv.t) (ident : ident) : typ =
+    match ident with
+    | { id = "bool"; _ } -> Tbool
+    | { id = "string"; _ } -> Tstring
+    | { id = "int"; _ } -> Tint
+    | { id; loc } ->
+      (match Hashtbl.find_opt tenv.structures id with
+       | Some s -> Tstruct s
+       | None -> errorm ~loc "unbound structure type '%s'" id)
+  ;;
+
+  (* convert an AST expression to a type (if the expression is a valid type specifier) *)
+  let rec typ_of_pexpr (tenv : TypeEnv.t) (pexpr : pexpr) : typ =
+    match pexpr.pexpr_desc with
+    | PEident ident -> typ_of_ident tenv ident
+    | PEunop (Ustar, e) -> Tptr (typ_of_pexpr tenv e)
+    | _ -> errorm ~loc:pexpr.pexpr_loc "invalid type specifier"
+  ;;
+
   (* convert an AST type to a TAST type *)
   let rec typ_of_ptyp (tenv : TypeEnv.t) (ptyp : ptyp) : typ =
     match ptyp with
-    | PTident ident ->
-      (match ident with
-       | { id = "bool"; _ } -> Tbool
-       | { id = "string"; _ } -> Tstring
-       | { id = "int"; _ } -> Tint
-       | { id; loc } ->
-         (match Hashtbl.find_opt tenv.structures id with
-          | Some s -> Tstruct s
-          | None -> errorm ~loc "unbound structure type '%s'" id))
+    | PTident ident -> typ_of_ident tenv ident
     | PTptr t -> Tptr (typ_of_ptyp tenv t)
   ;;
 
@@ -217,6 +230,7 @@ end = struct
   (* generate a list of identifier and a list of values to assign to them, based on the type (if provided) or on the type of the expressions
      given for initialization *)
   let rec generate_initialization_data
+            (tenv : TypeEnv.t)
             (pexpr_loc : location)
             (tau_opt : typ option)
               (* identifier list (will be left side of the assign statement). need to be generated for structs *)
@@ -225,19 +239,17 @@ end = struct
             (init_pexpr_list : pexpr list)
     : pexpr list * pexpr list
     =
-    (* select the case based on the given type (or not) and on the presence of a list with initialization values *)
-    match tau_opt, init_pexpr_list with
-    (* a struct type is given (and no init values) *)
-    | Some (Tstruct s), [] ->
-      (* for structures, we need to recursively generate init data (and identifiers list) for all the subfields *)
-      (* we iterate on each identifier and then on each field of the structure to generate an identifier list and init data, 
+    (* for structures, we need to recursively generate init data (and identifiers list) for all the subfields *)
+    (* we iterate on each identifier and then on each field of the structure to generate an identifier list and init data, 
          and then we concatenate the result in one multiple assignation (e.g. t.a, t.b = 0, 0) *)
+    let aux_struct (s : structure) ident_pexpr_list : pexpr list * pexpr list =
       let ident_pexpr_list, init_values =
         ident_pexpr_list
         |> List.map (fun ident_pexpr ->
           s.s_list
           |> List.map (fun f ->
             generate_initialization_data
+              tenv
               pexpr_loc
               (Some f.f_typ)
               [ { pexpr_desc = PEdot (ident_pexpr, { id = f.f_name; loc = pexpr_loc })
@@ -250,6 +262,11 @@ end = struct
       in
       ( ident_pexpr_list |> List.concat |> List.concat
       , init_values |> List.concat |> List.concat )
+    in
+    (* select the case based on the given type (or not) and on the presence of a list with initialization values *)
+    match tau_opt, init_pexpr_list with
+    (* a struct type is given (and no init values) *)
+    | Some (Tstruct s), [] -> aux_struct s ident_pexpr_list
     (* a struct type is given with some init values => not supported *)
     | Some (Tstruct s), _ ->
       errorm ~loc:pexpr_loc "structure initialization is not supported"
@@ -264,8 +281,39 @@ end = struct
       errorm
         ~loc:pexpr_loc
         "need either type or initialization value for variable declaration"
-    | None, pexpr_list -> ident_pexpr_list, pexpr_list
+    (* last case is when some variables are initialized with a new(); because the variable is allocated, we need to initialize it with its default value 
+       for instance, when we have var z = new(int), then we must add *z = 0 to initialize the integer *)
+    (* first, we ignore the case when the variables are initialized with a single function call other than new (e.g. x, y = f(...)) *)
+    | _, [ { pexpr_desc = PEcall ({ id; _ }, _) } ] when id <> "new" ->
+      ident_pexpr_list, init_pexpr_list
+    | _, init_pexpr_list ->
+      (* iterate the initi expression list to deal with the new() *)
+      let ident_pexpr_list, init_values =
+        List.map2
+          (fun ident init_value ->
+             match ident, init_value.pexpr_desc with
+             (* when seeing a call to new(), add an init statement with a default value corresponding to the newly allocated type *)
+             | ident, PEcall ({ id = "new"; _ }, [ e ]) ->
+               (match TypeHelpers.typ_of_pexpr tenv e with
+                | (Tbool | Tint | Tstring | Tptr _) as typ ->
+                  ( [ ident; { pexpr_desc = PEunop (Ustar, ident); pexpr_loc } ]
+                  , [ init_value; default_type_value pexpr_loc typ ] )
+                | Tstruct s ->
+                  (* for structure, we need to expand all the structure fields *)
+                  let ident_pexpr_list, init_values = aux_struct s [ ident ] in
+                  ident :: ident_pexpr_list, init_value :: init_values
+                | Tnil -> errorm ~loc:pexpr_loc "cannot build a new pointer on nil"
+                | Tmany _ ->
+                  failwith "unreachable (generate init data for pointer on Tmany)")
+             | _ -> [ ident ], [ init_value ])
+          ident_pexpr_list
+          init_pexpr_list
+        |> List.split
+      in
+      ident_pexpr_list |> List.concat, init_values |> List.concat
   ;;
+
+  (* ident_pexpr_list, pexpr_list *)
 
   (* given a list of expressions (typically from a block), will scan for variables declaration and insert variables assignation immediately after,
      in order to ensure that all declared variables are properly initialized (either with the provided expressions, or with the default value based on the type).
@@ -284,11 +332,34 @@ end = struct
           ident_list |> List.map (fun id -> { pexpr_desc = PEident id; pexpr_loc })
         in
         let ident_pexpr_list, init_values =
-          generate_initialization_data pexpr_loc tau_opt ident_pexpr_list pexpr_list
+          generate_initialization_data tenv pexpr_loc tau_opt ident_pexpr_list pexpr_list
         in
         aux
           ({ pexpr_desc = PEassign (ident_pexpr_list, init_values); pexpr_loc }
            :: expr
+           :: acc)
+          q
+      | ({ pexpr_desc =
+             PEassign (ident_pexpr_list, [ { pexpr_desc = PEcall ({ id; _ }, _) } ])
+         ; pexpr_loc
+         } as s)
+        :: q
+        when id <> "new" -> aux (s :: acc) q
+      (* when seeing variables assignment, generate additional initialization data when needed (e.g. for pointers assigned the result of a new()) *)
+      | { pexpr_desc = PEassign (ident_pexpr_list, pexpr_list); pexpr_loc } :: q ->
+        let ident_pexpr_list, init_values =
+          List.map2
+            (fun ident init_value ->
+               generate_initialization_data tenv pexpr_loc None [ ident ] [ init_value ])
+            ident_pexpr_list
+            pexpr_list
+          |> List.split
+        in
+        aux
+          ({ pexpr_desc =
+               PEassign (ident_pexpr_list |> List.concat, init_values |> List.concat)
+           ; pexpr_loc
+           }
            :: acc)
           q
       | s :: q -> aux (s :: acc) q
@@ -413,12 +484,10 @@ let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
     then errorm ~loc:id.loc "import of module 'fmt' is required to use 'fmt.Print'";
     tenv.fmt_used <- true;
     { expr_desc = TEprint (pel |> List.map (expr tenv)); expr_typ = Tmany [] }
-  (* function call new (for structure) *)
+  (* function call new (for type) *)
   | PEcall ({ id = "new"; _ }, [ e ]) ->
-    let te = expr tenv e in
-    (match te.expr_typ with
-     | Tstruct _ -> { expr_desc = TEnew te.expr_typ; expr_typ = Tptr te.expr_typ }
-     | _ -> errorm ~loc:pexpr.pexpr_loc "cannot call 'new' on a non-structure type")
+    let typ = TypeHelpers.typ_of_pexpr tenv e in
+    { expr_desc = TEnew typ; expr_typ = Tptr typ }
   | PEcall ({ id = "new"; _ }, _) ->
     errorm ~loc:pexpr.pexpr_loc "cannot call 'new' with multiple arguments"
   | PEcall (id, pel) ->
@@ -468,14 +537,11 @@ let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
        ; expr_typ = TypeHelpers.typ_of_typ_list f.fn_typ
        })
   | PEident id ->
-    (match Hashtbl.find_opt tenv.structures id.id with
-     | Some s -> { expr_desc = TEskip; expr_typ = Tstruct s }
-     | None ->
-       if id.id = "_" then errorm ~loc:pexpr.pexpr_loc "cannot use variable '_'";
-       (match Hashtbl.find_opt tenv.variables id.id with
-        | Some v -> v.v_used <- true
-        | None -> ());
-       expr_left_value tenv pexpr)
+    if id.id = "_" then errorm ~loc:pexpr.pexpr_loc "cannot use variable '_'";
+    (match Hashtbl.find_opt tenv.variables id.id with
+     | Some v -> v.v_used <- true
+     | None -> ());
+    expr_left_value tenv pexpr
   | PEdot (pe, id) ->
     let te = expr tenv pe in
     (match te.expr_typ with
@@ -791,7 +857,8 @@ let file ~debug:b ((imp, dl) : Ast.pfile) : Tast.tfile =
         in
         (* add it to the structure in the environment *)
         Hashtbl.add s.s_fields id field;
-        s.s_list <- field :: s.s_list));
+        s.s_list <- field :: s.s_list);
+      s.s_list <- List.rev s.s_list);
   (**** 3 ****)
   dl
   |> List.iter (function
