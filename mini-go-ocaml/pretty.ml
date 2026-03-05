@@ -44,7 +44,7 @@ let rec typ fmt = function
 let rec expr fmt e =
   match e.expr_desc with
   | TEskip -> fprintf fmt ";"
-  | TEnil -> fprintf fmt "ni"
+  | TEnil -> fprintf fmt "nil"
   | TEconstant (Cint n) -> fprintf fmt "%Ld" n
   | TEconstant (Cbool b) -> fprintf fmt "%b" b
   | TEconstant (Cstring s) -> fprintf fmt "%S" s

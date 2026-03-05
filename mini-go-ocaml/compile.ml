@@ -25,6 +25,7 @@ let rec expr_description (e : expr) : string =
     match e.expr_desc with
     | TEident v -> v.v_name, string_of_int v.v_ofs
     | TEunop (Ustar, e) -> "*(" ^ expr_description e ^ ")", ""
+    | TEdot (e, f) -> "field: " ^ f.f_name, string_of_int f.f_ofs ^ " (field)"
     | _ -> "other", "ofs"
   in
   " '" ^ name ^ "' (ofs=" ^ ofs ^ ")"
@@ -150,7 +151,7 @@ let rec compile_print (depth : int) (arg_list : expr list) : text (* code *) * d
       (* structures are printed in {}, with fields split by spaces *)
       failwith "print structures wip"
     | Tnil -> print_simple_value e_code e_data lbl_nil
-    | Tmany l -> failwith "unreachable (print Tmany)"
+    | Tmany _ -> failwith "unreachable (print Tmany)"
   in
   concat_code_data
     ~start_code:(depth_comment depth "[begin] call to fmt.Print")
@@ -271,17 +272,21 @@ and compile_expr (depth : int) (expr : expr) : text * data =
       ++ depth_comment depth ("[end] call of function " ^ f.fn_name)
     , args_data )
   | TEident var -> movq (ind ~ofs:var.v_ofs rbp) !%rdi, nop
-  | TEdot (expr, field) -> failwith "dot wip"
+  | TEdot _ ->
+    let e_code, e_data = compile_left_value (depth + 1) expr in
+    e_code ++ movq (ind rdi) !%rdi, e_data
   | TEassign ([ left_expr ], [ value ]) ->
     (* store value expressions on the stack at the variable's offset *)
     let lv_code, lv_data = compile_left_value (depth + 1) left_expr in
     let value_code, value_data = compile_expr (depth + 1) value in
     ( depth_comment depth ("[begin] variable assignment for" ^ expr_description left_expr)
+      ++ comment "value code"
       ++ value_code
       (* store value result (rdi) on the stack *)
       ++ pushq !%rdi
+      ++ comment "lv code"
       ++ lv_code
-      (* recover value result in register r8*)
+      (* recover value result in register r8 *)
       ++ popq r8
       ++ movq !%r8 (ind rdi)
       ++ depth_comment depth "[end] variables assignment"
@@ -318,7 +323,7 @@ and compile_expr (depth : int) (expr : expr) : text * data =
     let e_code, e_data =
       match l with
       | [] -> nop, nop
-      | [ e ] -> compile_expr (depth + 1) e
+      | [ e ] -> compile_expr depth e
       | _ -> failwith "unreachable (TEreturn)"
     in
     ( (* compute return value *)
@@ -358,15 +363,22 @@ and compile_expr (depth : int) (expr : expr) : text * data =
 and compile_left_value (depth : int) (expr : expr) : text * data =
   (* put the address of the left value in rdi *)
   match expr.expr_desc with
-  (* | TEident ({ v_typ = Tptr _; _ } as v) -> movq (ind ~ofs:v.v_ofs rbp) !%rdi, nop *)
   | TEident v -> movq !%rbp !%rdi ++ addq (imm v.v_ofs) !%rdi, nop
-  | TEunop (Ustar, ({ expr_typ = Tptr _ } as e)) ->
+  | TEunop (Ustar, ({ expr_typ = Tptr _; _ } as e)) ->
     (* return the address referenced by the pointer ie its value *)
     (* put the value of expression e in rdi (which is the wanted address, because the expression is a pointer) *)
     compile_expr (depth + 1) e
   (* star can only be used on pointers *)
   | TEunop (Ustar, _) -> failwith "unreachable (compile_left_value - star on non-pointer)"
-  | TEdot _ -> failwith "struct left_value dot wip"
+  | TEdot (e, f) ->
+    let e_code, e_data = compile_left_value (depth + 1) e in
+    ( e_code
+      (* if the expression is a pointer, add a dereference *)
+      ++ (match e.expr_typ with
+        | Tptr _ -> movq (ind rdi) !%rdi
+        | _ -> nop)
+      ++ addq (imm f.f_ofs) !%rdi
+    , e_data )
   | _ -> failwith "unreachable (compile_left_value)"
 ;;
 
@@ -427,7 +439,7 @@ let compile_func (tfunc : function_) (tbody : expr) : text (* code *) * data =
     ++ subq (imm total_var_size) !%rsp
     (* function body code *)
     ++ comment ("code for body of function " ^ tfunc.fn_name)
-    ++ body_code (* *)
+    ++ body_code
     ++ movq !%rbp !%rsp
     ++ popq rbp
     ++
