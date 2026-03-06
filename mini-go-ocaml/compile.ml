@@ -152,6 +152,210 @@ let rec compile_print (depth : int) (arg_list : expr list) : text (* code *) * d
 and compile_binop (depth : int) (binop : binop) (expr1 : expr) (expr2 : expr)
   : text * data
   =
+  match expr1.expr_desc, expr2.expr_desc with
+  | TEconstant c1, TEconstant c2 -> compile_binop_cst_cst depth binop c1 c2
+  | _, TEconstant c -> compile_binop_expr_cst depth binop expr1 c true
+  | TEconstant c, _ -> compile_binop_expr_cst depth binop expr2 c false
+  | _ -> compile_binop_expr_expr depth binop expr1 expr2
+
+and compile_binop_cst_cst
+      (depth : int)
+      (binop : binop)
+      (cst1 : constant)
+      (cst2 : constant)
+  =
+  let op_name, op_code =
+    match binop, cst1, cst2 with
+    (* create an invalid operation *)
+    | Bdiv, _, Cint 0L | Bmod, _, Cint 0L -> "/0", nop
+    (* other specific cases when one of the two constant is zero *)
+    | Badd, Cint 0L, Cint i | Badd, Cint i, Cint 0L | Bsub, Cint i, Cint 0L ->
+      "", movq (imm64 i) !%rdi
+    | Bsub, Cint 0L, Cint i -> "", movq (imm64 (Int64.neg i)) !%rdi
+    | Bmul, Cint 0L, _ | Bmul, _, Cint 0L | Bdiv, Cint 0L, _ | Bmod, Cint 0L, _ ->
+      "0", movq (imm 0) !%rdi
+    (* generic cases *)
+    | Badd, Cint i1, Cint i2 -> "+", movq (imm64 i1) !%rdi ++ addq (imm64 i2) !%rdi
+    | Bsub, Cint i1, Cint i2 -> "-", movq (imm64 i1) !%rdi ++ subq (imm64 i2) !%rdi
+    | Bmul, Cint i1, Cint i2 -> "*", movq (imm64 i1) !%rdi ++ imulq (imm64 i2) !%rdi
+    | Bdiv, Cint i1, Cint i2 ->
+      ( "/"
+      , (* integer signed division 
+            - dividend: rdx:rax
+            - divisor: first operand 
+            - quotient: rax <- result
+            - remainder: rdx
+        *)
+        movq (imm64 i1) !%rax
+        ++ movq (imm64 i2) !%rdi
+        ++ cqto
+        ++ idivq !%rdi
+        ++ movq !%rax !%rdi )
+    | Bmod, Cint i1, Cint i2 ->
+      ( "%"
+      , (* integer signed division 
+            - dividend: rdx:rax
+            - divisor: first operand 
+            - quotient: rax
+            - remainder: rdx <- result
+        *)
+        movq (imm64 i1) !%rax
+        ++ movq (imm64 i2) !%rdi
+        ++ cqto
+        ++ idivq !%rdi
+        ++ movq !%rdx !%rdi )
+    (* for boolean operations, we need to `and` the result with 1 to ensure that rdi is set to exactly 0 or 1 (and not another non-zero value) *)
+    | Beq, Cbool b1, Cbool b2 ->
+      ( "="
+      , movq (imm (if b1 then 1 else 0)) !%rdi
+        ++ cmpq (imm (if b2 then 1 else 0)) !%rdi
+        ++ sete !%dil
+        ++ andq (imm 1) !%rdi )
+    | Bne, Cbool b1, Cbool b2 ->
+      ( "!="
+      , movq (imm (if b1 then 1 else 0)) !%rdi
+        ++ cmpq (imm (if b2 then 1 else 0)) !%rdi
+        ++ setne !%dil
+        ++ andq (imm 1) !%rdi )
+    | Beq, Cint i1, Cint i2 ->
+      ( "="
+      , movq (imm64 i1) !%rdi ++ cmpq (imm64 i2) !%rdi ++ sete !%dil ++ andq (imm 1) !%rdi
+      )
+    | Bne, Cint i1, Cint i2 ->
+      ( "!="
+      , movq (imm64 i1) !%rdi
+        ++ cmpq (imm64 i2) !%rdi
+        ++ setne !%dil
+        ++ andq (imm 1) !%rdi )
+    | Blt, Cint i1, Cint i2 ->
+      ( "<"
+      , movq (imm64 i1) !%rdi ++ cmpq (imm64 i2) !%rdi ++ setl !%dil ++ andq (imm 1) !%rdi
+      )
+    | Ble, Cint i1, Cint i2 ->
+      ( "<="
+      , movq (imm64 i1) !%rdi
+        ++ cmpq (imm64 i2) !%rdi
+        ++ setle !%dil
+        ++ andq (imm 1) !%rdi )
+    | Bgt, Cint i1, Cint i2 ->
+      ( ">"
+      , movq (imm64 i1) !%rdi ++ cmpq (imm64 i2) !%rdi ++ setg !%dil ++ andq (imm 1) !%rdi
+      )
+    | Bge, Cint i1, Cint i2 ->
+      ( ">="
+      , movq (imm64 i1) !%rdi
+        ++ cmpq (imm64 i2) !%rdi
+        ++ setge !%dil
+        ++ andq (imm 1) !%rdi )
+    | Band, Cbool b1, Cbool b2 ->
+      ( "&&"
+      , movq (imm (if b1 then 1 else 0)) !%rdi
+        ++ andq (imm (if b2 then 1 else 0)) !%rdi
+        ++ setnz !%dil
+        ++ andq (imm 1) !%rdi )
+    | Bor, Cbool b1, Cbool b2 ->
+      ( "||"
+      , movq (imm (if b1 then 1 else 0)) !%rdi
+        ++ orq (imm (if b2 then 1 else 0)) !%rdi
+        ++ setnz !%dil
+        ++ andq (imm 1) !%rdi )
+    | _ -> failwith "unreachable (binary operation [cst - cst] with wrong types)"
+  in
+  (* concatenate code of both expressions and of operation *)
+  match op_name with
+  | "" -> nop, nop
+  | "0" -> op_code, nop
+  | "/0" -> failwith "invalid operation: division by zero"
+  | _ ->
+    concat_code_data
+      ~start_code:(depth_comment depth ("[begin] binary operation " ^ op_name))
+      ~finish_code:(depth_comment depth ("[end] binary operation " ^ op_name))
+      Fun.id
+      [ (* binary operation from constants: no expression compilation is needed *)
+        op_code, nop
+      ]
+
+and compile_binop_expr_cst
+      (depth : int)
+      (binop : binop)
+      (expr : expr)
+      (cst : constant)
+      (left : bool)
+  =
+  (* the boolean 'left' is here to say if the expression is the left or the right value *)
+  (* value of expression will be stored in register rdi *)
+  let op_name, op_code =
+    match binop, cst with
+    (* create an invalid operation *)
+    | Bdiv, Cint 0L | Bmod, Cint 0L -> "/0", nop
+    (* other specific cases when the constant is zero *)
+    | Badd, Cint 0L | Bsub, Cint 0L -> "", nop
+    | Bmul, Cint 0L -> "*0", movq (imm 0) !%rdi
+    (* generic cases *)
+    | Badd, Cint i -> "+", addq (imm64 i) !%rdi
+    | Bsub, Cint i ->
+      "-", if left then subq (imm64 i) !%rdi else subq (imm64 i) !%rdi ++ negq !%rdi
+    | Bmul, Cint i -> "*", imulq (imm64 i) !%rdi
+    | Bdiv, Cint i ->
+      ( "/"
+      , (* integer signed division 
+            - dividend: rdx:rax
+            - divisor: first operand (rdi)
+            - quotient: rax <- result
+            - remainder: rdx
+        *)
+        let init =
+          if left then movq !%rdi !%rax ++ movq (imm64 i) !%rdi else movq (imm64 i) !%rax
+        in
+        init ++ cqto ++ idivq !%rdi ++ movq !%rax !%rdi )
+    | Bmod, Cint i ->
+      ( "%"
+      , (* integer signed division 
+            - dividend: rdx:rax
+            - divisor: first operand 
+            - quotient: rax
+            - remainder: rdx <- result
+        *)
+        let init =
+          if left then movq !%rdi !%rax ++ movq (imm64 i) !%rdi else movq (imm64 i) !%rax
+        in
+        init ++ cqto ++ idivq !%rdi ++ movq !%rdx !%rdi )
+    (* for boolean operations, we need to `and` the result with 1 to ensure that rdi is set to exactly 0 or 1 (and not another non-zero value) *)
+    | Beq, Cbool b ->
+      "=", cmpq (imm (if b then 1 else 0)) !%rdi ++ sete !%dil ++ andq (imm 1) !%rdi
+    | Bne, Cbool b ->
+      "!=", cmpq (imm (if b then 1 else 0)) !%rdi ++ setne !%dil ++ andq (imm 1) !%rdi
+    | Beq, Cint i -> "=", cmpq (imm64 i) !%rdi ++ sete !%dil ++ andq (imm 1) !%rdi
+    | Bne, Cint i -> "!=", cmpq (imm64 i) !%rdi ++ setne !%dil ++ andq (imm 1) !%rdi
+    | Blt, Cint i -> "<", cmpq (imm64 i) !%rdi ++ setl !%dil ++ andq (imm 1) !%rdi
+    | Ble, Cint i -> "<=", cmpq (imm64 i) !%rdi ++ setle !%dil ++ andq (imm 1) !%rdi
+    | Bgt, Cint i -> ">", cmpq (imm64 i) !%rdi ++ setg !%dil ++ andq (imm 1) !%rdi
+    | Bge, Cint i -> ">=", cmpq (imm64 i) !%rdi ++ setge !%dil ++ andq (imm 1) !%rdi
+    | Band, Cbool b ->
+      "&&", andq (imm (if b then 1 else 0)) !%rdi ++ setnz !%dil ++ andq (imm 1) !%rdi
+    | Bor, Cbool b ->
+      "||", orq (imm (if b then 1 else 0)) !%rdi ++ setnz !%dil ++ andq (imm 1) !%rdi
+    | _ ->
+      Format.printf "%a %s %s\n" Pretty.expr expr (Pretty.binop binop) "cst";
+      failwith "unreachable (binary operation [expr - cst] with wrong types)"
+  in
+  (* concatenate code of the expression and operation *)
+  match op_name with
+  | "" -> nop, nop
+  | "*0" -> op_code, nop
+  | "/0" -> failwith "invalid operation: division by zero"
+  | _ ->
+    concat_code_data
+      ~start_code:(depth_comment depth ("[begin] binary operation " ^ op_name))
+      ~finish_code:(depth_comment depth ("[end] binary operation " ^ op_name))
+      Fun.id
+      [ (* compiled code of first expression, will store result in rdi *)
+        compile_expr (depth + 1) expr
+      ; (* compiled binary operation with a constant *)
+        op_code, nop
+      ]
+
+and compile_binop_expr_expr (depth : int) (binop : binop) (expr1 : expr) (expr2 : expr) =
   (* specific code for each operation, at the beginning 
       - resulting value of expression 1 is in r8
       - resulting value of expression 2 is in rdi
