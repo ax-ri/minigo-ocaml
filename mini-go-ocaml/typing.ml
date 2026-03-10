@@ -4,7 +4,6 @@ open Lib
 open Ast
 open Tast
 
-let debug : bool ref = ref false
 let dummy_loc : location = Lexing.dummy_pos, Lexing.dummy_pos
 
 exception Error of Ast.location * string
@@ -784,8 +783,7 @@ and
 ;;
 
 (* top-level typing rule: convert an AST file to a TAST file *)
-let file ~debug:b ((imp, dl) : Ast.pfile) : Tast.tfile =
-  debug := b;
+let file ((imp, dl) : Ast.pfile) : Tast.tfile =
   let tenv = TypeEnv.create imp in
   let function_bodies : (string, expr) Hashtbl.t = Hashtbl.create 8 in
   (**** 1 ****)

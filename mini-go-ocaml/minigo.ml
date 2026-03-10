@@ -46,8 +46,8 @@ let () =
     let f = Parser.file Lexer.next_token lb in
     close_in c;
     if !parse_only then exit 0;
-    let f = Typing.file ~debug f in
-    if debug then eprintf "Typing ok.@.Before rewrite (after typing):@.%a@." Pretty.file f;
+    let f = Typing.file f in
+    if debug then eprintf "Typing ok.@.After typing:@.%a@." Pretty.file f;
     if type_only then exit 0;
     let f = Rewrite.file ~debug f in
     if debug then eprintf "After rewrite:@.%a@." Pretty.file f;
