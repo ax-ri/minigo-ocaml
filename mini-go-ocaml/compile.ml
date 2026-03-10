@@ -137,9 +137,7 @@ let rec compile_print (depth : int) (arg_list : expr list) : text (* code *) * d
         (* call to printf (with alignment) *)
         ++ call "printf_"
       , e_data )
-    | Tstruct s ->
-      (* structures are printed in {}, with fields split by spaces *)
-      failwith "print structures wip"
+    | Tstruct s -> failwith "printing structures is not supported"
     | Tnil -> print_simple_value e_code e_data lbl_nil
     | Tmany _ -> failwith "unreachable (print Tmany)"
   in
