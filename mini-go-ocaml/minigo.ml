@@ -7,11 +7,13 @@ let usage = "usage: minigo [options] file.go"
 let debug = ref false
 let parse_only = ref false
 let type_only = ref false
+let optimize = ref false
 
 let spec =
   [ "--debug", Arg.Set debug, "  runs in debug mode"
   ; "--parse-only", Arg.Set parse_only, "  stops after parsing"
   ; "--type-only", Arg.Set type_only, "  stops after typing"
+  ; "--optimize", Arg.Set optimize, "  enables expressions optimization"
   ]
 ;;
 
@@ -31,6 +33,7 @@ let file =
 
 let debug = !debug
 let type_only = !type_only
+let optimize = !optimize
 
 let report_loc (b, e) =
   let l = b.pos_lnum in
@@ -51,11 +54,21 @@ let () =
     if type_only then exit 0;
     let f = Rewrite.file ~debug f in
     if debug then eprintf "After rewrite:@.%a@." Pretty.file f;
+    let f =
+      if optimize
+      then (
+        let f = Optirw.file ~debug f in
+        if debug then eprintf "After optimization:@.%a@." Pretty.file f;
+        f)
+      else f
+    in
     let code = Compile.file ~debug f in
     let c = open_out (Filename.chop_suffix file ".go" ^ ".s") in
     let fmt = formatter_of_out_channel c in
     X86_64.print_program fmt code;
-    close_out c
+    close_out c;
+    Printf.eprintf "starting\n";
+    Printf.eprintf "done\n"
   with
   | Lexer.Lexing_error s ->
     report_loc (lexeme_start_p lb, lexeme_end_p lb);
