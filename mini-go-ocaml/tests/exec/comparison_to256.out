@@ -1,0 +1,13 @@
+Equality with 256: 
+	0==256: false
+	0!=256: true
+Strict comparison with 256: 
+	256<0: false
+	0<256: true
+	256>0: true
+	0>256: false
+Comparison with 256: 
+	256<=0: false
+	0<=256: true
+	256>=0: true
+	0>=256: false
