@@ -372,11 +372,7 @@ let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
   | PEconstant (Cint _ as c) -> { expr_desc = TEconstant c; expr_typ = Tint }
   | PEconstant (Cstring _ as c) -> { expr_desc = TEconstant c; expr_typ = Tstring }
   | PEbinop (Bdiv, _, { pexpr_desc = PEconstant (Cint 0L); _ }) -> raise Division_by_zero
-  | PEbinop ((Badd as binop), pe1, pe2)
-  | PEbinop ((Bsub as binop), pe1, pe2)
-  | PEbinop ((Bmul as binop), pe1, pe2)
-  | PEbinop ((Bdiv as binop), pe1, pe2)
-  | PEbinop ((Bmod as binop), pe1, pe2) ->
+  | PEbinop (((Badd | Bsub | Bmul | Bdiv | Bmod) as binop), pe1, pe2) ->
     let te1 = expr tenv pe1 in
     let te2 = expr tenv pe2 in
     if te1.expr_typ <> Tint || te2.expr_typ <> Tint
@@ -390,7 +386,7 @@ let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
         Pretty.typ
         te2.expr_typ;
     { expr_desc = TEbinop (binop, te1, te2); expr_typ = Tint }
-  | PEbinop ((Beq as binop), pe1, pe2) | PEbinop ((Bne as binop), pe1, pe2) ->
+  | PEbinop (((Beq | Bne) as binop), pe1, pe2) ->
     let te1 = expr tenv pe1 in
     let te2 = expr tenv pe2 in
     if not (TypeHelpers.are_typ_equals te1.expr_typ te2.expr_typ)
@@ -406,10 +402,7 @@ let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
         "wrong types for binary operation '%s': both types are nil"
         (Pretty.binop binop);
     { expr_desc = TEbinop (binop, te1, te2); expr_typ = Tbool }
-  | PEbinop ((Blt as binop), pe1, pe2)
-  | PEbinop ((Ble as binop), pe1, pe2)
-  | PEbinop ((Bgt as binop), pe1, pe2)
-  | PEbinop ((Bge as binop), pe1, pe2) ->
+  | PEbinop (((Blt | Ble | Bgt | Bge) as binop), pe1, pe2) ->
     let te1 = expr tenv pe1 in
     let te2 = expr tenv pe2 in
     if te1.expr_typ <> Tint || te2.expr_typ <> Tint
@@ -423,7 +416,7 @@ let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
         Pretty.typ
         te2.expr_typ;
     { expr_desc = TEbinop (binop, te1, te2); expr_typ = Tbool }
-  | PEbinop ((Band as binop), pe1, pe2) | PEbinop ((Bor as binop), pe1, pe2) ->
+  | PEbinop (((Band | Bor) as binop), pe1, pe2) ->
     let te1 = expr tenv pe1 in
     let te2 = expr tenv pe2 in
     if te1.expr_typ <> Tbool || te2.expr_typ <> Tbool
