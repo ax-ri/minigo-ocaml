@@ -371,6 +371,7 @@ let rec expr (tenv : TypeEnv.t) (pexpr : Ast.pexpr) : Tast.expr =
   | PEconstant (Cbool _ as c) -> { expr_desc = TEconstant c; expr_typ = Tbool }
   | PEconstant (Cint _ as c) -> { expr_desc = TEconstant c; expr_typ = Tint }
   | PEconstant (Cstring _ as c) -> { expr_desc = TEconstant c; expr_typ = Tstring }
+  | PEbinop (Bdiv, _, { pexpr_desc = PEconstant (Cint 0L); _ }) -> raise Division_by_zero
   | PEbinop ((Badd as binop), pe1, pe2)
   | PEbinop ((Bsub as binop), pe1, pe2)
   | PEbinop ((Bmul as binop), pe1, pe2)

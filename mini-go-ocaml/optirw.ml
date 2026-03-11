@@ -357,9 +357,9 @@ module RwInt : Rw = struct
         | LEbinop (Ast.Bsub, Some l, Some r) -> Some (Int64.sub l r)
         | LEbinop (Ast.Bmul, Some l, Some r) -> Some (Int64.mul l r)
         | LEbinop (Ast.Bdiv, Some l, Some r) ->
-          if r <> 0L then Some (Int64.div l r) else None
+          if r <> 0L then Some (Int64.div l r) else raise Division_by_zero
         | LEbinop (Ast.Bmod, Some l, Some r) ->
-          if r <> 0L then Some (Int64.rem l r) else None
+          if r <> 0L then Some (Int64.rem l r) else raise Division_by_zero
         | _ -> None
       ;;
     end)

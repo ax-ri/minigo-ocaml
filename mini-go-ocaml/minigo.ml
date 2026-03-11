@@ -82,6 +82,9 @@ let () =
     report_loc l;
     eprintf "error: %s\n@." msg;
     exit 1
+  | Division_by_zero ->
+    eprintf "error: detected static division by zero\n@.";
+    exit 1
   | e ->
     Ocolor_format.eprintf "@{<yellow>Anomaly@}: %s\n@." (Printexc.to_string e);
     Printexc.print_backtrace Out_channel.stdout;
