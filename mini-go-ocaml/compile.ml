@@ -65,12 +65,18 @@ and compute_struct_size_and_offsets (s : structure) =
 ;;
 
 (* Create label for each recurring format string *)
-let lbl_true = new_label ()
-and lbl_false = new_label ()
-and lbl_nil = new_label ()
-and lbl_int = new_label ()
-and lbl_string = new_label ()
-and lbl_ptr = new_label ()
+
+let string_lbl = Hashtbl.create 10
+let format_lbl = Hashtbl.create 10
+
+let find_lbl lbl_tbl (lbl_name : string) (lbl_content : string) : label * data =
+  match Hashtbl.find_opt lbl_tbl lbl_name with
+  | None ->
+    let lbl = new_label () in
+    Hashtbl.add lbl_tbl lbl_name lbl;
+    lbl, label lbl ++ string lbl_content
+  | Some lbl -> lbl, nop
+;;
 
 (* Print function : need to call printf for each argument with the good format *)
 let rec compile_print (depth : int) (arg_list : expr list) : text (* code *) * data =
@@ -107,6 +113,8 @@ let rec compile_print (depth : int) (arg_list : expr list) : text (* code *) * d
     let e_code, e_data = compile_expr (depth + 1) arg in
     match arg.expr_typ with
     | Tbool ->
+      let lbl_true, lbl_true_data = find_lbl format_lbl "lbl_true" "true" in
+      let lbl_false, lbl_false_data = find_lbl format_lbl "lbl_false" "false" in
       ( e_code
         (* put the label for string "true" in rax and the label for string "false" in rbx *)
         ++ movq (ilab lbl_true) !%rax
@@ -120,10 +128,16 @@ let rec compile_print (depth : int) (arg_list : expr list) : text (* code *) * d
         ++ cmove !%rbx !%rdi
         (* call to printf (with alignment) *)
         ++ call "printf_"
-      , e_data )
-    | Tint -> print_simple_value e_code e_data lbl_int
-    | Tstring -> print_simple_value e_code e_data lbl_string
+      , e_data ++ lbl_true_data ++ lbl_false_data )
+    | Tint ->
+      let lbl_int, lbl_data = find_lbl format_lbl "lbl_int" "%lld" in
+      print_simple_value e_code (e_data ++ lbl_data) lbl_int
+    | Tstring ->
+      let lbl_string, lbl_data = find_lbl format_lbl "lbl_string" "%s" in
+      print_simple_value e_code (e_data ++ lbl_data) lbl_string
     | Tptr _ ->
+      let lbl_ptr, lbl_ptr_data = find_lbl format_lbl "lbl_ptr" "%p" in
+      let lbl_nil, lbl_nil_data = find_lbl format_lbl "lbl_nil" "<nil>" in
       ( e_code
         (* put the label for string "<nil>" in rax and the label for string "%p" (pointer) in rbx *)
         ++ movq (ilab lbl_nil) !%rax
@@ -136,9 +150,11 @@ let rec compile_print (depth : int) (arg_list : expr list) : text (* code *) * d
         ++ cmovne !%rbx !%rdi
         (* call to printf (with alignment) *)
         ++ call "printf_"
-      , e_data )
+      , e_data ++ lbl_ptr_data ++ lbl_nil_data )
     | Tstruct s -> failwith "printing structures is not supported"
-    | Tnil -> print_simple_value e_code e_data lbl_nil
+    | Tnil ->
+      let lbl_nil, lbl_data = find_lbl format_lbl "lbl_nil" "<nil>" in
+      print_simple_value e_code (e_data ++ lbl_data) lbl_nil
     | Tmany _ -> failwith "unreachable (print Tmany)"
   in
   concat_code_data
@@ -215,8 +231,8 @@ and compile_expr (depth : int) (expr : expr) : text * data =
   | TEconstant (Cbool b) -> movq (imm (if b then 1 else 0)) !%rdi, nop
   | TEconstant (Cint i) -> movq (imm64 i) !%rdi, nop
   | TEconstant (Cstring s) ->
-    let lbl = new_label () in
-    movq (ilab lbl) !%rdi, label lbl ++ string s
+    let lbl_string, lbl_data = find_lbl string_lbl s s in
+    movq (ilab lbl_string) !%rdi, lbl_data
   | TEbinop (binop, expr1, expr2) -> compile_binop (depth + 1) binop expr1 expr2
   | TEunop (Uneg, expr) ->
     let e_code, e_data = compile_expr (depth + 1) expr in
@@ -469,21 +485,6 @@ let file ?debug:(b = false) (dl : Tast.tfile) : X86_64.program =
       ++ aligned_call_wrapper ~f:"malloc" ~newf:"malloc_"
       ++ aligned_call_wrapper ~f:"calloc" ~newf:"calloc_"
       ++ aligned_call_wrapper ~f:"printf" ~newf:"printf_"
-  ; data =
-      (* static data here, such as string constants *)
-      comment "global data for all code"
-      ++ label lbl_true
-      ++ string "true"
-      ++ label lbl_false
-      ++ string "false"
-      ++ label lbl_nil
-      ++ string "<nil>"
-      ++ label lbl_int
-      ++ string "%lld"
-      ++ label lbl_string
-      ++ string "%s"
-      ++ label lbl_ptr
-      ++ string "%p"
-      ++ data
+  ; data (* static data here, such as string constants *)
   }
 ;;
