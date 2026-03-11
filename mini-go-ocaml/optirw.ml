@@ -36,18 +36,22 @@ module Tast = struct
   let compare_expr = Stdlib.compare
   let pp_var = Pretty.var
   let pp_expr = Pretty.expr
+
+  let typ_of_constant (c : Ast.constant) : typ =
+    match c with
+    | Ast.Cbool _ -> Tbool
+    | Ast.Cint _ -> Tint
+    | Ast.Cstring _ -> Tstring
+  ;;
 end
 
 (* The language of expressions to be optimized. It is composed of atomic operations (that cannot be optimized) of arity 0, and operators of arity greater than 0 (e.g. unary or binary operations) *)
 module L = struct
   type 'a shape =
     (* for atomic operators, keep the value in the variant *)
-    | LEnil
     | LEconstant of Ast.constant
     | LEident of Tast.var
-    | LEstar of Tast.expr
-    | LEdot of Tast.expr
-    | LEcall of Tast.expr
+    | LEother of Tast.expr
     (* arity greater than 0 *)
     | LEunop of Ast.unop * 'a
     | LEbinop of Ast.binop * 'a * 'a
@@ -64,38 +68,42 @@ module L = struct
   let rec of_expr (e : Tast.expr) : t =
     Mk
       (match e.expr_desc with
-       | TEnil -> LEnil
        | TEconstant c -> LEconstant c
        | TEident v -> LEident v
-       | TEdot _ -> LEdot e
-       | TEcall _ -> LEcall e
-       | TEunop (Ustar, _) -> LEstar e
-       | TEunop (u, e) -> LEunop (u, of_expr e)
-       | TEbinop (b, e1, e2) -> LEbinop (b, of_expr e1, of_expr e2)
-       | _ -> failwith (Format.asprintf "unreachable (L.of_expr) %a" Pretty.expr e))
+       | TEunop (((Ast.Unot | Ast.Uneg) as u), e) -> LEunop (u, of_expr e)
+       | TEbinop
+           ( ((Ast.Badd | Ast.Bsub | Ast.Bmul | Ast.Bdiv | Ast.Bmod | Ast.Band | Ast.Bor)
+              as b)
+           , e1
+           , e2 ) -> LEbinop (b, of_expr e1, of_expr e2)
+       | _ -> LEother e)
   ;;
 
   (* convert a language expression back to a Typed AST expression *)
   let rec to_expr (Mk t : t) : Tast.expr =
     match t with
-    | LEnil -> { expr_desc = Tast.TEnil; expr_typ = Tast.Tnil }
-    | LEconstant c -> { expr_desc = Tast.TEconstant c; expr_typ = Tast.Tint }
-    | LEident v -> { expr_desc = Tast.TEident v; expr_typ = Tast.Tint }
-    | LEstar e -> e
-    | LEdot e -> e
-    | LEcall e -> e
-    | LEunop (u, e) -> { expr_desc = Tast.TEunop (u, to_expr e); expr_typ = Tast.Tint }
-    | LEbinop (b, e1, e2) ->
+    | LEconstant c -> { expr_desc = Tast.TEconstant c; expr_typ = Tast.typ_of_constant c }
+    | LEident v -> { expr_desc = Tast.TEident v; expr_typ = v.v_typ }
+    | LEunop ((Ast.Unot as u), e) ->
+      { expr_desc = Tast.TEunop (u, to_expr e); expr_typ = Tast.Tbool }
+    | LEunop ((Ast.Uneg as u), e) ->
+      { expr_desc = Tast.TEunop (u, to_expr e); expr_typ = Tast.Tint }
+    | LEbinop (((Ast.Band | Ast.Bor) as b), e1, e2) ->
+      { expr_desc = Tast.TEbinop (b, to_expr e1, to_expr e2); expr_typ = Tast.Tbool }
+    | LEbinop (((Ast.Badd | Ast.Bsub | Ast.Bmul | Ast.Bdiv | Ast.Bmod) as b), e1, e2) ->
       { expr_desc = Tast.TEbinop (b, to_expr e1, to_expr e2); expr_typ = Tast.Tint }
+    | LEunop ((Ast.Uamp | Ast.Ustar), _)
+    | LEbinop ((Ast.Beq | Ast.Bne | Ast.Blt | Ast.Ble | Ast.Bgt | Ast.Bge), _, _) ->
+      failwith (Format.asprintf "unreachable (L.to_expr) %a" pp_t (Mk t))
+    | LEother e -> e
   ;;
 
+  (* | _ -> failwith (Format.asprintf "unreachable (L.of_expr) %a" pp_t (Mk t)) *)
+
   type op =
-    | NilOp
     | ConstOp of Ast.constant
     | IdentOp of Tast.var
-    | StarOp of Tast.expr
-    | DotOp of Tast.expr
-    | CallOp of Tast.expr
+    | OtherOp of Tast.expr
     | UnOp of Ast.unop
     | BinOp of Ast.binop
   [@@deriving eq]
@@ -123,12 +131,9 @@ module L = struct
   ;;
 
   let op : 'a shape -> op = function
-    | LEnil -> NilOp
     | LEconstant c -> ConstOp c
     | LEident v -> IdentOp v
-    | LEstar e -> StarOp e
-    | LEdot e -> DotOp e
-    | LEcall e -> CallOp e
+    | LEother e -> OtherOp e
     | LEunop (unop, _) -> UnOp unop
     | LEbinop (binop, _, _) -> BinOp binop
   ;;
@@ -136,24 +141,18 @@ module L = struct
   let make : op -> 'a list -> 'a shape =
     fun op ls ->
     match op, ls with
-    | NilOp, [] -> LEnil
     | ConstOp c, [] -> LEconstant c
     | IdentOp v, [] -> LEident v
-    | StarOp e, [] -> LEstar e
-    | DotOp e, [] -> LEdot e
-    | CallOp e, [] -> LEcall e
+    | OtherOp e, [] -> LEother e
     | UnOp unop, [ s ] -> LEunop (unop, s)
     | BinOp binop, [ l; r ] -> LEbinop (binop, l, r)
     | _ -> failwith "unreachable (L.make)"
   ;;
 
   let children : 'a shape -> 'a list = function
-    | LEnil -> []
     | LEconstant _ -> []
     | LEident _ -> []
-    | LEstar _ -> []
-    | LEdot e -> []
-    | LEcall e -> []
+    | LEother _ -> []
     | LEunop (_, e) -> [ e ]
     | LEbinop (_, e1, e2) -> [ e1; e2 ]
   ;;
@@ -161,12 +160,9 @@ module L = struct
   let map_children : 'a shape -> ('a -> 'b) -> 'b shape =
     fun term f ->
     match term with
-    | LEnil -> LEnil
     | LEconstant c -> LEconstant c
     | LEident v -> LEident v
-    | LEstar e -> LEstar e
-    | LEdot e -> LEdot e
-    | LEcall e -> LEcall e
+    | LEother e -> LEother e
     | LEunop (u, e) -> LEunop (u, f e)
     | LEbinop (b, e1, e2) -> LEbinop (b, f e1, f e2)
   ;;
@@ -251,7 +247,7 @@ module C = struct
 
   let cost f : Ego.Id.t L.shape -> t = function
     (* compute the cost of an operator based on its arity *)
-    | LEnil | LEconstant _ | LEident _ | LEstar _ | LEdot _ | LEcall _ -> 1.0
+    | LEconstant _ | LEident _ | LEother _ -> 1.0
     | LEunop (_, s) -> f s +. 1.0
     (* higher cost for mul and div as they are more CPU costly than others *)
     | LEbinop (Ast.Bmul, l, r) -> f l +. f r +. 1.5
@@ -436,12 +432,8 @@ let rec expr (e : Tast.expr) : Tast.expr =
   | TEunop (Ast.Unot, _) -> RwBool.rw e
   | TEunop (Ast.Uneg, _) -> RwInt.rw e
   | TEunop _ -> e
-  | TEbinop (Ast.Band, _, _) | TEbinop (Ast.Bor, _, _) -> RwBool.rw e
-  | TEbinop (Ast.Badd, _, _)
-  | TEbinop (Ast.Bsub, _, _)
-  | TEbinop (Ast.Bmul, _, _)
-  | TEbinop (Ast.Bdiv, _, _)
-  | TEbinop (Ast.Bmod, _, _) -> RwInt.rw e
+  | TEbinop ((Ast.Band | Ast.Bor), _, _) -> RwBool.rw e
+  | TEbinop ((Ast.Badd | Ast.Bsub | Ast.Bmul | Ast.Bdiv | Ast.Bmod), _, _) -> RwInt.rw e
   | TEbinop _ -> e
   (* for other expressions / statements, we just need to recursively rewrite the sub-expressions *)
   | TEcall (f, l) -> { e with expr_desc = TEcall (f, l |> List.map expr) }
