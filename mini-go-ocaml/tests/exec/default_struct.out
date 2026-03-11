@@ -1,0 +1,5 @@
+Default values:
+  - default int: 0 0 0 0 0
+  - default boolean: false false false false false
+  - default string: -----
+  - default pointer: <nil> <nil> <nil> <nil>
