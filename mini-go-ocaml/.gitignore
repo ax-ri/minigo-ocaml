@@ -1,5 +1,6 @@
 _build/
 *.exe
+minigo
 test
 test.s
 test.go

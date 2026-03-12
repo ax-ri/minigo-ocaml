@@ -3,3 +3,16 @@
 (using menhir 3.0)
 
 (wrapped_executables false)
+
+(generate_opam_files true)
+
+(package
+ (name minigo)
+ (maintainers Elfie Molina--Bonnefoy, Axel Richard)
+ (authors Elfie Molina--Bonnefoy, Axel Richard)
+ (homepage https://github.com/ax-ri/minigo-ocaml)
+ (bug_reports https://github.com/ax-ri/minigo-ocaml)
+ (license MIT)
+ (synopsis "A compiler for the MiniGo language, written in OCaml")
+ (description "Final project for CSC_52064 course.")
+ (depends dune menhir ego ocolor))

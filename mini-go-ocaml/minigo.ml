@@ -66,9 +66,7 @@ let () =
     let c = open_out (Filename.chop_suffix file ".go" ^ ".s") in
     let fmt = formatter_of_out_channel c in
     X86_64.print_program fmt code;
-    close_out c;
-    Printf.eprintf "starting\n";
-    Printf.eprintf "done\n"
+    close_out c
   with
   | Lexer.Lexing_error s ->
     report_loc (lexeme_start_p lb, lexeme_end_p lb);

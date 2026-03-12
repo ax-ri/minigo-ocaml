@@ -6,6 +6,7 @@
  (modules parser))
 
 (executable
+ (public_name minigo)
  (name minigo)
  (libraries ocolor ego)
  (preprocess
